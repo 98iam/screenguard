@@ -32,9 +32,13 @@ import com.example.screenguard.data.DetectionLog
 import com.example.screenguard.data.DetectionLogRepository
 import com.example.screenguard.data.PreferencesManager
 import com.example.screenguard.network.CloudflareIncidentDispatcher
+import com.example.screenguard.network.FirebaseIncidentDispatcher
 import com.example.screenguard.receiver.ScreenGuardDeviceAdminReceiver
 import com.example.screenguard.service.MatchMode
 import com.example.screenguard.theme.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -234,12 +238,23 @@ fun ScreenGuardApp(preferences: PreferencesManager) {
 
             Spacer(modifier = Modifier.height(6.dp))
 
+            val requireGuardianAuth: (() -> Unit) -> Unit = { action ->
+                if (preferences.hasGuardianPin() && !preferences.isGuardianUnlocked()) {
+                    pendingAction = action
+                    pinPromptValue = ""
+                    pinPromptError = null
+                    showPinPrompt = true
+                } else {
+                    action()
+                }
+            }
+
             // Tab Contents
             when (selectedTab) {
-                0 -> DashboardWordsTab(preferences, blockedWords, detectionLogs.size, blockPlayStore)
-                1 -> WhitelistTab(preferences, whitelist)
+                0 -> DashboardWordsTab(preferences, blockedWords, detectionLogs.size, blockPlayStore, requireGuardianAuth)
+                1 -> WhitelistTab(preferences, whitelist, requireGuardianAuth)
                 2 -> HistoryTab(detectionLogs)
-                3 -> SettingsTab(preferences, matchMode, showToast, isAccessibilityEnabled, blockPlayStore, blockedPackages)
+                3 -> SettingsTab(preferences, matchMode, showToast, isAccessibilityEnabled, blockPlayStore, blockedPackages, requireGuardianAuth)
             }
         }
 
@@ -294,7 +309,8 @@ fun DashboardWordsTab(
     preferences: PreferencesManager,
     blockedWords: Set<String>,
     detectionCount: Int,
-    blockPlayStore: Boolean
+    blockPlayStore: Boolean,
+    requireGuardianAuth: (() -> Unit) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -343,7 +359,7 @@ fun DashboardWordsTab(
 
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(
-                    onClick = { preferences.load18PlusPreset() },
+                    onClick = { requireGuardianAuth { preferences.load18PlusPreset() } },
                     colors = ButtonDefaults.buttonColors(containerColor = EmeraldDark),
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
@@ -352,7 +368,7 @@ fun DashboardWordsTab(
                 }
 
                 Button(
-                    onClick = { showAddDialog = true },
+                    onClick = { requireGuardianAuth { showAddDialog = true } },
                     colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
@@ -437,7 +453,7 @@ fun DashboardWordsTab(
 
                             Row {
                                 IconButton(
-                                    onClick = { editingWord = word },
+                                    onClick = { requireGuardianAuth { editingWord = word } },
                                     modifier = Modifier.size(32.dp)
                                 ) {
                                     Icon(
@@ -448,7 +464,7 @@ fun DashboardWordsTab(
                                     )
                                 }
                                 IconButton(
-                                    onClick = { wordPendingDeletion = word },
+                                    onClick = { requireGuardianAuth { wordPendingDeletion = word } },
                                     modifier = Modifier.size(32.dp)
                                 ) {
                                     Icon(
@@ -672,7 +688,11 @@ fun StatCard(label: String, value: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun WhitelistTab(preferences: PreferencesManager, whitelist: Set<String>) {
+fun WhitelistTab(
+    preferences: PreferencesManager,
+    whitelist: Set<String>,
+    requireGuardianAuth: (() -> Unit) -> Unit
+) {
     var showAddDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -695,7 +715,7 @@ fun WhitelistTab(preferences: PreferencesManager, whitelist: Set<String>) {
         )
 
         Button(
-            onClick = { showAddDialog = true },
+            onClick = { requireGuardianAuth { showAddDialog = true } },
             colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
             shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth()
@@ -733,7 +753,7 @@ fun WhitelistTab(preferences: PreferencesManager, whitelist: Set<String>) {
                         )
 
                         IconButton(
-                            onClick = { preferences.removeWhitelistPackage(pkg) },
+                            onClick = { requireGuardianAuth { preferences.removeWhitelistPackage(pkg) } },
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
@@ -865,10 +885,32 @@ fun SettingsTab(
     showToast: Boolean,
     isAccessibilityEnabled: Boolean,
     blockPlayStore: Boolean,
-    blockedPackages: Set<String>
+    blockedPackages: Set<String>,
+    requireGuardianAuth: (() -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     var showAddPackageDialog by remember { mutableStateOf(false) }
+    var showSetPinDialog by remember { mutableStateOf(false) }
+    var newPinText by remember { mutableStateOf("") }
+    var confirmPinText by remember { mutableStateOf("") }
+    var pinDialogError by remember { mutableStateOf<String?>(null) }
+
+    val hasGuardianPin = preferences.hasGuardianPin()
+    val isUnlocked = preferences.isGuardianUnlocked()
+    val pauseUntil by preferences.pauseUntil.collectAsState()
+    val isAppPaused = System.currentTimeMillis() < pauseUntil
+
+    val dpm = remember { context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager }
+    val adminComponent = remember { ComponentName(context, ScreenGuardDeviceAdminReceiver::class.java) }
+    var isAdminActive by remember { mutableStateOf(dpm?.isAdminActive(adminComponent) == true) }
+
+    // Periodic check for device admin status
+    LaunchedEffect(Unit) {
+        while (true) {
+            isAdminActive = dpm?.isAdminActive(adminComponent) == true
+            kotlinx.coroutines.delay(2000)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -879,7 +921,7 @@ fun SettingsTab(
     ) {
         item {
             Text(
-                text = "App Blocker & Protection Settings",
+                text = "Guardian Protection & Security",
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 color = Slate200,
@@ -887,7 +929,338 @@ fun SettingsTab(
             )
         }
 
-        // 1. Google Play Store Blocker Card
+        // 1. Guardian PIN & Protection Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Shield,
+                                contentDescription = "Guardian",
+                                tint = if (hasGuardianPin) EmeraldGreen else RoseRed,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Guardian Protection PIN",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (!hasGuardianPin) RoseDark else if (isUnlocked) Color(0xFF1E3A8A) else EmeraldDark
+                        ) {
+                            Text(
+                                text = if (!hasGuardianPin) "NOT SET" else if (isUnlocked) "UNLOCKED (3m)" else "PROTECTED",
+                                color = if (!hasGuardianPin) RoseRed else if (isUnlocked) SkyBlue else EmeraldGreen,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (hasGuardianPin) {
+                            "ScreenGuard settings, uninstallation, and app controls are protected. Only the Guardian with the secret PIN can modify them."
+                        } else {
+                            "⚠️ No Guardian PIN configured! Anyone can turn off ScreenGuard or delete blocked words. Set a PIN known only to your accountability partner."
+                        },
+                        fontSize = 11.sp,
+                        color = Slate400
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                if (hasGuardianPin) {
+                                    requireGuardianAuth {
+                                        newPinText = ""
+                                        confirmPinText = ""
+                                        pinDialogError = null
+                                        showSetPinDialog = true
+                                    }
+                                } else {
+                                    newPinText = ""
+                                    confirmPinText = ""
+                                    pinDialogError = null
+                                    showSetPinDialog = true
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (hasGuardianPin) "Change PIN" else "Set Guardian PIN", fontSize = 12.sp)
+                        }
+
+                        if (hasGuardianPin) {
+                            if (isUnlocked) {
+                                OutlinedButton(
+                                    onClick = { preferences.lockGuardianSession() },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = RoseRed),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Lock Now", fontSize = 12.sp)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = {
+                                        requireGuardianAuth {
+                                            preferences.unlockGuardianSession()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = SkyBlue),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Unlock (3m)", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Anti-Uninstall Device Admin Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.AdminPanelSettings,
+                                contentDescription = "Admin",
+                                tint = if (isAdminActive) EmeraldGreen else Color(0xFFF59E0B),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Anti-Uninstall Protection",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isAdminActive) EmeraldDark else Color(0xFF451A03)
+                        ) {
+                            Text(
+                                text = if (isAdminActive) "ACTIVE" else "INACTIVE",
+                                color = if (isAdminActive) EmeraldGreen else Color(0xFFF59E0B),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (isAdminActive) {
+                            "✓ Device Administrator is active. The Android system blocks uninstallation without first revoking admin privileges (which is guarded by PIN)."
+                        } else {
+                            "Activate Device Administrator to prevent long-press uninstall or uninstallation via Android Settings."
+                        },
+                        fontSize = 11.sp,
+                        color = Slate400
+                    )
+
+                    if (!isAdminActive) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                                    putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                                    putExtra(
+                                        DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                        "Required to protect ScreenGuard against unauthorized uninstallation."
+                                    )
+                                }
+                                context.startActivity(intent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Activate Uninstall Protection", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Temporary Break / Pause Request Card (Firebase Realtime)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.AccessTime,
+                                contentDescription = "Break",
+                                tint = if (isAppPaused) SkyBlue else Color(0xFF10B981),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Temporary Break / Pause",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isAppPaused) Color(0xFF1E3A8A) else EmeraldDark
+                        ) {
+                            Text(
+                                text = if (isAppPaused) "PAUSED" else "ENFORCING",
+                                color = if (isAppPaused) SkyBlue else EmeraldGreen,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (isAppPaused) {
+                            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(pauseUntil))
+                            "A temporary break is active until $timeStr. Enforcement will resume automatically."
+                        } else {
+                            "Need temporary access for a legitimate task? Send a 15-minute break request to your Guardian's phone for approval via Firebase."
+                        },
+                        fontSize = 11.sp,
+                        color = Slate400
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (isAppPaused) {
+                        OutlinedButton(
+                            onClick = { preferences.clearPause() },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = RoseRed),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("End Break Early & Resume Protection", fontSize = 12.sp)
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                FirebaseIncidentDispatcher.requestPause(context, 15) { success, msg ->
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        Toast.makeText(
+                                            context,
+                                            if (success) "✓ 15-Min Break Request Sent to Guardian!" else "Error: $msg",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Request 15-Min Break from Guardian", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Guardian Admin Dashboard Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Dashboard, contentDescription = "Dashboard", tint = SkyBlue, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Guardian Admin Dashboard", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Live incident feed, screenshot lightbox, and pause approval panel.", fontSize = 11.sp, color = Slate400)
+                    }
+
+                    Button(
+                        onClick = {
+                            requireGuardianAuth {
+                                context.startActivity(Intent(context, GuardianActivity::class.java))
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Slate700),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text("Open", fontSize = 12.sp, color = Slate200)
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                text = "General App & Detection Settings",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = Slate200,
+                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
+            )
+        }
+
+        // 5. Google Play Store Blocker Card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -908,11 +1281,15 @@ fun SettingsTab(
                             Text("Block Google Play Store", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text("Instantly closes the Play Store whenever it is opened so you cannot download new apps.", fontSize = 11.sp, color = Slate400)
+                        Text("Instantly closes Play Store to prevent installing unmonitored apps.", fontSize = 11.sp, color = Slate400)
                     }
                     Switch(
                         checked = blockPlayStore,
-                        onCheckedChange = { preferences.setBlockPlayStore(it) },
+                        onCheckedChange = { targetState ->
+                            requireGuardianAuth {
+                                preferences.setBlockPlayStore(targetState)
+                            }
+                        },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = RoseRed
@@ -922,7 +1299,7 @@ fun SettingsTab(
             }
         }
 
-        // 2. Blacklisted App Packages Manager
+        // 6. Blacklisted App Packages Manager
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -942,7 +1319,7 @@ fun SettingsTab(
                             color = Color.White
                         )
                         Button(
-                            onClick = { showAddPackageDialog = true },
+                            onClick = { requireGuardianAuth { showAddPackageDialog = true } },
                             colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                             shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
@@ -974,7 +1351,7 @@ fun SettingsTab(
                                 modifier = Modifier.weight(1f)
                             )
                             IconButton(
-                                onClick = { preferences.removeBlockedPackage(pkg) },
+                                onClick = { requireGuardianAuth { preferences.removeBlockedPackage(pkg) } },
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = RoseRed, modifier = Modifier.size(14.dp))
@@ -985,7 +1362,7 @@ fun SettingsTab(
             }
         }
 
-        // 3. Word Matching Mode Card
+        // 7. Word Matching Mode Card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1004,13 +1381,17 @@ fun SettingsTab(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { preferences.setMatchMode(MatchMode.EXACT_WORD) }
+                            .clickable {
+                                requireGuardianAuth { preferences.setMatchMode(MatchMode.EXACT_WORD) }
+                            }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(
                             selected = matchMode == MatchMode.EXACT_WORD,
-                            onClick = { preferences.setMatchMode(MatchMode.EXACT_WORD) },
+                            onClick = {
+                                requireGuardianAuth { preferences.setMatchMode(MatchMode.EXACT_WORD) }
+                            },
                             colors = RadioButtonDefaults.colors(selectedColor = PrimaryBlue)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1023,13 +1404,17 @@ fun SettingsTab(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { preferences.setMatchMode(MatchMode.SUBSTRING) }
+                            .clickable {
+                                requireGuardianAuth { preferences.setMatchMode(MatchMode.SUBSTRING) }
+                            }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(
                             selected = matchMode == MatchMode.SUBSTRING,
-                            onClick = { preferences.setMatchMode(MatchMode.SUBSTRING) },
+                            onClick = {
+                                requireGuardianAuth { preferences.setMatchMode(MatchMode.SUBSTRING) }
+                            },
                             colors = RadioButtonDefaults.colors(selectedColor = PrimaryBlue)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1042,7 +1427,7 @@ fun SettingsTab(
             }
         }
 
-        // 4. Toast Feedback Toggle
+        // 8. Toast Feedback Toggle
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1072,7 +1457,7 @@ fun SettingsTab(
             }
         }
 
-        // 5. Accessibility Quick Shortcut
+        // 9. Accessibility Quick Shortcut
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1108,6 +1493,62 @@ fun SettingsTab(
                 }
             }
         }
+    }
+
+    if (showSetPinDialog) {
+        AlertDialog(
+            onDismissRequest = { showSetPinDialog = false },
+            containerColor = Slate800,
+            title = { Text(if (hasGuardianPin) "Change Guardian PIN" else "Set Guardian PIN", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter a 4-6 digit secret PIN known only to the guardian/accountability partner:", fontSize = 12.sp, color = Slate400)
+                    OutlinedTextField(
+                        value = newPinText,
+                        onValueChange = { newPinText = it },
+                        placeholder = { Text("New PIN (4-6 digits)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmPinText,
+                        onValueChange = { confirmPinText = it },
+                        placeholder = { Text("Confirm New PIN") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (pinDialogError != null) {
+                        Text(pinDialogError!!, color = RoseRed, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val pin = newPinText.trim()
+                        val confirm = confirmPinText.trim()
+                        if (pin.length < 4 || pin.length > 8) {
+                            pinDialogError = "PIN must be between 4 and 8 digits"
+                        } else if (pin != confirm) {
+                            pinDialogError = "PINs do not match"
+                        } else {
+                            preferences.setGuardianPin(pin)
+                            preferences.lockGuardianSession()
+                            showSetPinDialog = false
+                            Toast.makeText(context, "✓ Guardian PIN Set & Active!", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                ) {
+                    Text("Save PIN")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSetPinDialog = false }) {
+                    Text("Cancel", color = Slate400)
+                }
+            }
+        )
     }
 
     if (showAddPackageDialog) {

@@ -1,9 +1,11 @@
 package com.example.screenguard
 
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.util.Base64
+import android.util.Log
+import android.util.LruCache
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.lifecycleScope
 import com.example.screenguard.data.PreferencesManager
+import com.google.firebase.database.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -39,11 +42,9 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 data class Incident(
@@ -52,6 +53,7 @@ data class Incident(
     val packageName: String,
     val appName: String,
     val matchedWord: String,
+    val screenshotBase64: String?,
     val screenshotUrl: String?,
     val timestamp: Long
 )
@@ -72,7 +74,12 @@ class GuardianActivity : ComponentActivity() {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    private val imageCache = ConcurrentHashMap<String, Bitmap>()
+    // LruCache bounded by memory (max 30MB) to prevent OOM
+    private val imageCache = object : LruCache<String, Bitmap>(30 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int {
+            return value.byteCount
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,74 +116,130 @@ class GuardianActivity : ComponentActivity() {
 
         var incidents by remember { mutableStateOf<List<Incident>>(emptyList()) }
         var pauseRequests by remember { mutableStateOf<List<PauseRequest>>(emptyList()) }
-        var viewingScreenshotUrl by remember { mutableStateOf<String?>(null) }
+        var viewingScreenshotPayload by remember { mutableStateOf<Pair<String?, String?>?>(null) }
+        var isFirebaseActive by remember { mutableStateOf(false) }
 
-        fun refreshData() {
-            if (serverUrl.isBlank()) return
-            isRefreshing = true
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    val cleanUrl = serverUrl.trim().trimEnd('/')
+        // 1. Firebase Real-time Synchronization
+        DisposableEffect(Unit) {
+            val db = try {
+                FirebaseDatabase.getInstance()
+            } catch (e: Exception) {
+                null
+            }
 
-                    // 1. Fetch Incidents
-                    val incReq = Request.Builder().url("$cleanUrl/api/incidents?limit=40").build()
-                    client.newCall(incReq).execute().use { res ->
-                        if (res.isSuccessful) {
-                            val json = JSONObject(res.body?.string() ?: "{}")
-                            val arr = json.optJSONArray("incidents") ?: JSONArray()
-                            val list = mutableListOf<Incident>()
-                            for (i in 0 until arr.length()) {
-                                val obj = arr.getJSONObject(i)
-                                list.add(
-                                    Incident(
-                                        id = obj.optString("id"),
-                                        deviceId = obj.optString("device_id", "Android"),
-                                        packageName = obj.optString("package_name"),
-                                        appName = obj.optString("app_name", "Unknown"),
-                                        matchedWord = obj.optString("matched_word"),
-                                        screenshotUrl = obj.optString("screenshot_url").takeIf { it.isNotBlank() },
-                                        timestamp = obj.optLong("timestamp")
-                                    )
+            if (db != null) {
+                isFirebaseActive = true
+
+                // Real-time Incidents listener
+                val incidentsRef = db.getReference("incidents")
+                val incidentsListener = object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        val list = mutableListOf<Incident>()
+                        for (child in snapshot.children) {
+                            val id = child.child("id").getValue(String::class.java) ?: child.key ?: ""
+                            val deviceId = child.child("deviceId").getValue(String::class.java) ?: "Android"
+                            val packageName = child.child("packageName").getValue(String::class.java) ?: ""
+                            val appName = child.child("appName").getValue(String::class.java) ?: "Unknown"
+                            val matchedWord = child.child("matchedWord").getValue(String::class.java) ?: ""
+                            val screenshotBase64 = child.child("screenshotBase64").getValue(String::class.java)
+                            val screenshotUrl = child.child("screenshotUrl").getValue(String::class.java)
+                            val timestamp = child.child("timestamp").getValue(Long::class.java) ?: 0L
+
+                            list.add(
+                                Incident(
+                                    id = id,
+                                    deviceId = deviceId,
+                                    packageName = packageName,
+                                    appName = appName,
+                                    matchedWord = matchedWord,
+                                    screenshotBase64 = screenshotBase64,
+                                    screenshotUrl = screenshotUrl,
+                                    timestamp = timestamp
                                 )
-                            }
-                            withContext(Dispatchers.Main) { incidents = list }
+                            )
                         }
+                        // Sort newest first
+                        incidents = list.sortedByDescending { it.timestamp }
                     }
 
-                    // 2. Fetch Pause Requests
-                    val reqReq = Request.Builder().url("$cleanUrl/api/requests").build()
-                    client.newCall(reqReq).execute().use { res ->
-                        if (res.isSuccessful) {
-                            val json = JSONObject(res.body?.string() ?: "{}")
-                            val arr = json.optJSONArray("requests") ?: JSONArray()
-                            val list = mutableListOf<PauseRequest>()
-                            for (i in 0 until arr.length()) {
-                                val obj = arr.getJSONObject(i)
-                                list.add(
-                                    PauseRequest(
-                                        id = obj.optString("id"),
-                                        deviceId = obj.optString("device_id", "Android"),
-                                        durationMinutes = obj.optInt("duration_minutes", 15),
-                                        status = obj.optString("status", "PENDING"),
-                                        requestedAt = obj.optLong("requested_at"),
-                                        approvedUntil = obj.optLong("approved_until")
-                                    )
-                                )
-                            }
-                            withContext(Dispatchers.Main) { pauseRequests = list }
-                        }
+                    override fun onCancelled(error: DatabaseError) {
+                        Log.e("GuardianActivity", "Incidents listener error: ${error.message}")
                     }
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@GuardianActivity, "Sync Error: ${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                } finally {
-                    withContext(Dispatchers.Main) { isRefreshing = false }
                 }
+                incidentsRef.limitToLast(50).addValueEventListener(incidentsListener)
+
+                // Real-time Pause Requests listener
+                val requestsRef = db.getReference("pause_requests")
+                val requestsListener = object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        val list = mutableListOf<PauseRequest>()
+                        for (child in snapshot.children) {
+                            val id = child.child("id").getValue(String::class.java) ?: child.key ?: ""
+                            val deviceId = child.child("deviceId").getValue(String::class.java) ?: "Android"
+                            val durationMinutes = child.child("durationMinutes").getValue(Int::class.java) ?: 15
+                            val status = child.child("status").getValue(String::class.java) ?: "PENDING"
+                            val requestedAt = child.child("requestedAt").getValue(Long::class.java) ?: 0L
+                            val approvedUntil = child.child("approvedUntil").getValue(Long::class.java) ?: 0L
+
+                            list.add(
+                                PauseRequest(
+                                    id = id,
+                                    deviceId = deviceId,
+                                    durationMinutes = durationMinutes,
+                                    status = status,
+                                    requestedAt = requestedAt,
+                                    approvedUntil = approvedUntil
+                                )
+                            )
+                        }
+                        pauseRequests = list.sortedByDescending { it.requestedAt }
+                    }
+
+                    override fun onCancelled(error: DatabaseError) {
+                        Log.e("GuardianActivity", "Pause requests listener error: ${error.message}")
+                    }
+                }
+                requestsRef.limitToLast(20).addValueEventListener(requestsListener)
+
+                onDispose {
+                    incidentsRef.removeEventListener(incidentsListener)
+                    requestsRef.removeEventListener(requestsListener)
+                }
+            } else {
+                onDispose {}
             }
         }
 
-        fun respondToRequest(requestId: String, decision: String) {
+        fun respondToFirebaseRequest(request: PauseRequest, decision: String) {
+            val db = FirebaseDatabase.getInstance()
+            val reqRef = db.getReference("pause_requests").child(request.id)
+            val now = System.currentTimeMillis()
+
+            if (decision == "APPROVED") {
+                val durationMs = request.durationMinutes * 60 * 1000L
+                val approvedUntil = now + durationMs
+
+                reqRef.child("status").setValue("APPROVED")
+                reqRef.child("approvedUntil").setValue(approvedUntil)
+
+                // Update device pause state in Firebase
+                val deviceRef = db.getReference("devices").child(request.deviceId)
+                deviceRef.child("isPaused").setValue(true)
+                deviceRef.child("pauseUntil").setValue(approvedUntil)
+
+                Toast.makeText(this@GuardianActivity, "✓ Break Approved for ${request.durationMinutes} mins!", Toast.LENGTH_SHORT).show()
+            } else {
+                reqRef.child("status").setValue("REJECTED")
+                val deviceRef = db.getReference("devices").child(request.deviceId)
+                deviceRef.child("isPaused").setValue(false)
+                deviceRef.child("pauseUntil").setValue(0L)
+
+                Toast.makeText(this@GuardianActivity, "✕ Break Request Denied", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        fun respondToCloudflareRequest(requestId: String, decision: String) {
+            if (serverUrl.isBlank()) return
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     val cleanUrl = serverUrl.trim().trimEnd('/')
@@ -189,23 +252,16 @@ class GuardianActivity : ComponentActivity() {
                     client.newCall(req).execute().use { res ->
                         withContext(Dispatchers.Main) {
                             if (res.isSuccessful) {
-                                Toast.makeText(this@GuardianActivity, "Request $decision!", Toast.LENGTH_SHORT).show()
-                                refreshData()
-                            } else {
-                                Toast.makeText(this@GuardianActivity, "Error: ${res.code}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@GuardianActivity, "Cloudflare: Request $decision", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@GuardianActivity, "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@GuardianActivity, "Cloudflare error: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
-        }
-
-        LaunchedEffect(serverUrl) {
-            refreshData()
         }
 
         Scaffold(
@@ -220,9 +276,9 @@ class GuardianActivity : ComponentActivity() {
                                 color = Color.White
                             )
                             Text(
-                                if (serverUrl.isBlank()) "No Cloudflare Server Configured" else "Connected to Cloudflare",
+                                if (isFirebaseActive) "● Firebase Live Sync Active" else "Offline / Cloudflare",
                                 fontSize = 11.sp,
-                                color = if (serverUrl.isBlank()) Color(0xFFEF4444) else Color(0xFF10B981)
+                                color = if (isFirebaseActive) Color(0xFF10B981) else Color(0xFFEF4444)
                             )
                         }
                     },
@@ -230,9 +286,6 @@ class GuardianActivity : ComponentActivity() {
                         containerColor = MaterialTheme.colorScheme.surface
                     ),
                     actions = {
-                        IconButton(onClick = { refreshData() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
-                        }
                         IconButton(onClick = { showSettingsDialog = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                         }
@@ -271,8 +324,8 @@ class GuardianActivity : ComponentActivity() {
                     if (incidents.isEmpty()) {
                         EmptyState(
                             title = "No Incidents Recorded",
-                            subtitle = "When a blocked keyword or bad content is detected, the screenshot and details will appear here.",
-                            onRefresh = { refreshData() }
+                            subtitle = "When a blocked keyword or bad content is detected, the screenshot and details will appear here in real time.",
+                            onRefresh = {}
                         )
                     } else {
                         LazyColumn(
@@ -282,9 +335,11 @@ class GuardianActivity : ComponentActivity() {
                             items(incidents, key = { it.id }) { item ->
                                 IncidentCard(
                                     incident = item,
-                                    onViewScreenshot = { url -> viewingScreenshotUrl = url },
-                                    loadImage = { url, onLoaded ->
-                                        loadCachedImage(url, onLoaded)
+                                    onViewScreenshot = { base64, url ->
+                                        viewingScreenshotPayload = Pair(base64, url)
+                                    },
+                                    loadImage = { base64, url, onLoaded ->
+                                        loadCachedImage(base64, url, onLoaded)
                                     }
                                 )
                             }
@@ -296,7 +351,7 @@ class GuardianActivity : ComponentActivity() {
                         EmptyState(
                             title = "No Pause Requests",
                             subtitle = "When the monitored device requests a temporary 15-minute pause, you can approve or reject it here.",
-                            onRefresh = { refreshData() }
+                            onRefresh = {}
                         )
                     } else {
                         LazyColumn(
@@ -306,8 +361,14 @@ class GuardianActivity : ComponentActivity() {
                             items(pauseRequests, key = { it.id }) { req ->
                                 PauseRequestCard(
                                     request = req,
-                                    onApprove = { respondToRequest(req.id, "APPROVED") },
-                                    onReject = { respondToRequest(req.id, "REJECTED") }
+                                    onApprove = {
+                                        respondToFirebaseRequest(req, "APPROVED")
+                                        respondToCloudflareRequest(req.id, "APPROVED")
+                                    },
+                                    onReject = {
+                                        respondToFirebaseRequest(req, "REJECTED")
+                                        respondToCloudflareRequest(req.id, "REJECTED")
+                                    }
                                 )
                             }
                         }
@@ -326,8 +387,8 @@ class GuardianActivity : ComponentActivity() {
         }
 
         // Full Screen Screenshot Lightbox Dialog
-        viewingScreenshotUrl?.let { url ->
-            Dialog(onDismissRequest = { viewingScreenshotUrl = null }) {
+        viewingScreenshotPayload?.let { (base64, url) ->
+            Dialog(onDismissRequest = { viewingScreenshotPayload = null }) {
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = Color.Black),
@@ -346,7 +407,7 @@ class GuardianActivity : ComponentActivity() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text("Offending Screenshot", fontWeight = FontWeight.Bold, color = Color.White)
-                            IconButton(onClick = { viewingScreenshotUrl = null }) {
+                            IconButton(onClick = { viewingScreenshotPayload = null }) {
                                 Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
                             }
                         }
@@ -357,8 +418,8 @@ class GuardianActivity : ComponentActivity() {
                             contentAlignment = Alignment.Center
                         ) {
                             var bmp by remember { mutableStateOf<Bitmap?>(null) }
-                            LaunchedEffect(url) {
-                                loadCachedImage(url) { bmp = it }
+                            LaunchedEffect(base64, url) {
+                                loadCachedImage(base64, url) { bmp = it }
                             }
                             if (bmp != null) {
                                 Image(
@@ -381,11 +442,11 @@ class GuardianActivity : ComponentActivity() {
             var tempUrl by remember { mutableStateOf(serverUrl) }
             AlertDialog(
                 onDismissRequest = { showSettingsDialog = false },
-                title = { Text("Cloudflare Backend URL") },
+                title = { Text("Backend Settings") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            "Enter the URL of your deployed Cloudflare Worker:",
+                            "Firebase Realtime Database is active and handles real-time screenshot alerts.\n\nOptionally configure a Cloudflare Worker URL:",
                             fontSize = 13.sp,
                             color = Color.LightGray
                         )
@@ -403,9 +464,8 @@ class GuardianActivity : ComponentActivity() {
                         serverUrl = tempUrl.trim()
                         prefs.setCloudflareEndpoint(serverUrl)
                         showSettingsDialog = false
-                        refreshData()
                     }) {
-                        Text("Save & Connect")
+                        Text("Save")
                     }
                 },
                 dismissButton = {
@@ -417,8 +477,9 @@ class GuardianActivity : ComponentActivity() {
         }
     }
 
-    private fun loadCachedImage(url: String, onLoaded: (Bitmap?) -> Unit) {
-        val cached = imageCache[url]
+    private fun loadCachedImage(base64: String?, url: String?, onLoaded: (Bitmap?) -> Unit) {
+        val cacheKey = base64?.take(32) ?: url ?: return onLoaded(null)
+        val cached = imageCache.get(cacheKey)
         if (cached != null) {
             onLoaded(cached)
             return
@@ -426,21 +487,36 @@ class GuardianActivity : ComponentActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val req = Request.Builder().url(url).build()
-                client.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        res.body?.byteStream()?.use { stream ->
-                            val bmp = BitmapFactory.decodeStream(stream)
-                            if (bmp != null) {
-                                imageCache[url] = bmp
-                                withContext(Dispatchers.Main) { onLoaded(bmp) }
-                                return@launch
+                // 1. If base64 exists, decode directly
+                if (!base64.isNullOrBlank()) {
+                    val rawBase64 = if (base64.contains(",")) base64.substringAfter(",") else base64
+                    val decodedBytes = Base64.decode(rawBase64, Base64.DEFAULT)
+                    val bmp = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                    if (bmp != null) {
+                        imageCache.put(cacheKey, bmp)
+                        withContext(Dispatchers.Main) { onLoaded(bmp) }
+                        return@launch
+                    }
+                }
+
+                // 2. Otherwise fetch from URL
+                if (!url.isNullOrBlank()) {
+                    val req = Request.Builder().url(url).build()
+                    client.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            res.body?.byteStream()?.use { stream ->
+                                val bmp = BitmapFactory.decodeStream(stream)
+                                if (bmp != null) {
+                                    imageCache.put(cacheKey, bmp)
+                                    withContext(Dispatchers.Main) { onLoaded(bmp) }
+                                    return@launch
+                                }
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                // Ignore
+                Log.e("GuardianActivity", "Image load error", e)
             }
             withContext(Dispatchers.Main) { onLoaded(null) }
         }
@@ -450,8 +526,8 @@ class GuardianActivity : ComponentActivity() {
 @Composable
 fun IncidentCard(
     incident: Incident,
-    onViewScreenshot: (String) -> Unit,
-    loadImage: (String, (Bitmap?) -> Unit) -> Unit
+    onViewScreenshot: (base64: String?, url: String?) -> Unit,
+    loadImage: (base64: String?, url: String?, (Bitmap?) -> Unit) -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(14.dp),
@@ -487,7 +563,7 @@ fun IncidentCard(
                             color = Color.White
                         )
                         Text(
-                            text = incident.packageName,
+                            text = "${incident.packageName} · ${incident.deviceId}",
                             fontSize = 11.sp,
                             color = Color.Gray,
                             maxLines = 1,
@@ -524,21 +600,22 @@ fun IncidentCard(
             }
 
             // Screenshot Thumbnail
-            if (!incident.screenshotUrl.isNullOrBlank()) {
+            val hasImage = !incident.screenshotBase64.isNullOrBlank() || !incident.screenshotUrl.isNullOrBlank()
+            if (hasImage) {
                 Spacer(modifier = Modifier.height(12.dp))
                 var bitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-                LaunchedEffect(incident.screenshotUrl) {
-                    loadImage(incident.screenshotUrl) { bitmap = it }
+                LaunchedEffect(incident.screenshotBase64, incident.screenshotUrl) {
+                    loadImage(incident.screenshotBase64, incident.screenshotUrl) { bitmap = it }
                 }
 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(150.dp)
+                        .height(160.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color.Black)
-                        .clickable { onViewScreenshot(incident.screenshotUrl) },
+                        .clickable { onViewScreenshot(incident.screenshotBase64, incident.screenshotUrl) },
                     contentAlignment = Alignment.Center
                 ) {
                     if (bitmap != null) {
@@ -556,7 +633,7 @@ fun IncidentCard(
                                 .padding(8.dp)
                         ) {
                             Text(
-                                "Tap to View Full",
+                                "Tap to View Full Screen",
                                 fontSize = 10.sp,
                                 color = Color.White,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -693,12 +770,6 @@ fun EmptyState(title: String, subtitle: String, onRefresh: () -> Unit) {
                 color = Color.Gray,
                 lineHeight = 18.sp
             )
-            Spacer(modifier = Modifier.height(20.dp))
-            Button(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Refresh")
-            }
         }
     }
 }

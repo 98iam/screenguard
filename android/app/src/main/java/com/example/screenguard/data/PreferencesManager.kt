@@ -108,9 +108,20 @@ class PreferencesManager(context: Context) {
     private val _uninstallProtection = MutableStateFlow(prefs.getBoolean(KEY_UNINSTALL_PROTECTION, true))
     val uninstallProtection: StateFlow<Boolean> = _uninstallProtection.asStateFlow()
 
+    private val _pauseUntil = MutableStateFlow(prefs.getLong(KEY_PAUSE_UNTIL, 0L))
+    val pauseUntil: StateFlow<Long> = _pauseUntil.asStateFlow()
+
     // Temporary in-memory unlocked session
     @Volatile
     var isGuardianUnlockedUntil: Long = 0L
+
+    private fun hashPin(pin: String): String {
+        if (pin.isEmpty()) return ""
+        val salt = "screenguard_salt_v1_"
+        val bytes = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((salt + pin).toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
 
     fun isGuardianUnlocked(): Boolean {
         if (!hasGuardianPin()) return true
@@ -128,12 +139,46 @@ class PreferencesManager(context: Context) {
     fun hasGuardianPin(): Boolean = _guardianPin.value.isNotBlank()
 
     fun setGuardianPin(pin: String) {
-        prefs.edit().putString(KEY_GUARDIAN_PIN, pin).apply()
-        _guardianPin.value = pin
+        val hashed = hashPin(pin)
+        prefs.edit().putString(KEY_GUARDIAN_PIN, hashed).apply()
+        _guardianPin.value = hashed
+    }
+
+    fun removeGuardianPin() {
+        prefs.edit().remove(KEY_GUARDIAN_PIN).apply()
+        _guardianPin.value = ""
+        isGuardianUnlockedUntil = 0L
     }
 
     fun verifyGuardianPin(pin: String): Boolean {
-        return _guardianPin.value.isNotEmpty() && _guardianPin.value == pin
+        val current = _guardianPin.value
+        if (current.isEmpty()) return true
+        val hashed = hashPin(pin)
+        return current == hashed || current == pin
+    }
+
+    fun getDeviceId(): String {
+        var id = prefs.getString(KEY_DEVICE_ID, null)
+        if (id.isNullOrBlank()) {
+            id = java.util.UUID.randomUUID().toString().substring(0, 8)
+            prefs.edit().putString(KEY_DEVICE_ID, id).apply()
+        }
+        return id
+    }
+
+    fun isAppPaused(): Boolean {
+        val until = _pauseUntil.value
+        return System.currentTimeMillis() < until
+    }
+
+    fun setPauseUntil(timestamp: Long) {
+        prefs.edit().putLong(KEY_PAUSE_UNTIL, timestamp).apply()
+        _pauseUntil.value = timestamp
+    }
+
+    fun clearPause() {
+        prefs.edit().putLong(KEY_PAUSE_UNTIL, 0L).apply()
+        _pauseUntil.value = 0L
     }
 
     fun setCloudflareEndpoint(url: String) {
@@ -290,6 +335,8 @@ class PreferencesManager(context: Context) {
         private const val KEY_GUARDIAN_PIN = "key_guardian_pin"
         private const val KEY_CLOUDFLARE_ENDPOINT = "key_cloudflare_endpoint"
         private const val KEY_UNINSTALL_PROTECTION = "key_uninstall_protection"
+        private const val KEY_PAUSE_UNTIL = "key_pause_until"
+        private const val KEY_DEVICE_ID = "key_device_id"
 
         @Volatile
         private var instance: PreferencesManager? = null

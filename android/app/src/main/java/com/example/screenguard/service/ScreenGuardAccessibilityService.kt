@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -14,6 +15,8 @@ import android.widget.Toast
 import com.example.screenguard.data.DetectionLogRepository
 import com.example.screenguard.data.PreferencesManager
 import com.example.screenguard.network.CloudflareIncidentDispatcher
+import com.example.screenguard.network.FirebaseIncidentDispatcher
+import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,19 +26,46 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     private lateinit var preferences: PreferencesManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastTriggerTime = 0L
+    private var lastScreenshotTime = 0L
+    private var pauseListener: ValueEventListener? = null
 
     // Known critical system packages that should never be closed
     private val defaultProtectedPackages = setOf(
         "com.android.systemui",
         "com.google.android.permissioncontroller",
-        "com.android.permissioncontroller",
         "android"
+    )
+
+    private val settingsAndInstallerPackages = setOf(
+        "com.android.settings",
+        "com.samsung.android.settings",
+        "com.miui.securitycenter",
+        "com.coloros.safecenter",
+        "com.google.android.packageinstaller",
+        "com.android.packageinstaller"
     )
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         preferences = PreferencesManager.getInstance(this)
         _isServiceRunning.value = true
+
+        // Real-time synchronization of Guardian pause status
+        try {
+            pauseListener = FirebaseIncidentDispatcher.attachPauseStatusListener(applicationContext) { isPaused, _ ->
+                if (isPaused) {
+                    mainHandler.post {
+                        Toast.makeText(
+                            applicationContext,
+                            "⏸ ScreenGuard: Temporary Pause Approved by Guardian",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("ScreenGuardService", "Failed to attach Firebase pause listener", e)
+        }
     }
 
     private fun isPackageProtected(pkg: String): Boolean {
@@ -69,29 +99,39 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             preferences = PreferencesManager.getInstance(this)
         }
 
+        // Check if guardian granted a temporary pause
+        if (preferences.isAppPaused()) return
+
         val eventPkg = event.packageName?.toString() ?: ""
         val now = System.currentTimeMillis()
         val rootNode = rootInActiveWindow ?: event.source
         val rootPkg = rootNode?.packageName?.toString() ?: eventPkg
 
         // 1. Anti-Tamper & Anti-Uninstall Settings Guard
-        if (eventPkg == "com.android.settings" || rootPkg == "com.android.settings") {
+        val isSettingsOrInstaller = settingsAndInstallerPackages.contains(eventPkg) ||
+                settingsAndInstallerPackages.contains(rootPkg)
+
+        if (isSettingsOrInstaller) {
             if (preferences.uninstallProtection.value && !preferences.isGuardianUnlocked()) {
                 val sb = StringBuilder()
                 try {
-                    extractTextRecursive(rootNode, sb, maxNodes = 100)
+                    extractTextRecursive(rootNode, sb, maxNodes = 120)
                 } catch (e: Exception) {}
-                val settingsText = sb.toString().lowercase()
+                val text = sb.toString().lowercase()
 
-                val isTamperAttempt = settingsText.contains("screenguard") ||
-                        settingsText.contains("accessibility") ||
-                        settingsText.contains("device admin") ||
-                        settingsText.contains("force stop") ||
-                        settingsText.contains("uninstall") ||
-                        settingsText.contains("deactivate") ||
-                        settingsText.contains("special app access")
+                val hasScreenGuard = text.contains("screenguard")
+                val hasDangerAction = text.contains("force stop") ||
+                        text.contains("uninstall") ||
+                        text.contains("deactivate") ||
+                        text.contains("disable") ||
+                        text.contains("clear data") ||
+                        text.contains("clear storage") ||
+                        text.contains("turn off")
 
-                if (isTamperAttempt) {
+                val isAccessibilityDetailForScreenGuard = hasScreenGuard &&
+                        (text.contains("accessibility") || text.contains("use service") || text.contains("shortcut"))
+
+                if ((hasScreenGuard && hasDangerAction) || isAccessibilityDetailForScreenGuard) {
                     if (now - lastTriggerTime > 1000) {
                         lastTriggerTime = now
                         performGlobalAction(GLOBAL_ACTION_HOME)
@@ -112,13 +152,13 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         // 2. Check if protection is enabled
         if (!preferences.isEnabled.value) return
 
-        // 3. Instant Blacklisted App Check (e.g. Google Play Store or Cookie Manga)
+        // 3. Instant Blacklisted App Check (e.g. Google Play Store or custom apps)
         val blockedPackages = preferences.blockedPackages.value
         val isEventPkgBlocked = blockedPackages.any { it.equals(eventPkg, ignoreCase = true) }
         val isRootPkgBlocked = blockedPackages.any { it.equals(rootPkg, ignoreCase = true) }
 
         if (isEventPkgBlocked || isRootPkgBlocked) {
-            if (now - lastTriggerTime > 400) {
+            if (now - lastTriggerTime > 500) {
                 lastTriggerTime = now
                 val targetPkg = if (isRootPkgBlocked) rootPkg else eventPkg
 
@@ -134,26 +174,12 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // Capture screenshot before returning home
-                triggerIncidentScreenshotAndUpload(targetPkg, appLabel, "[LOCKED APP: $appLabel]")
-
-                performGlobalAction(GLOBAL_ACTION_HOME)
-
-                DetectionLogRepository.addLog(
-                    packageName = targetPkg,
-                    appName = appLabel,
-                    matchedWord = "[LOCKED APP: $appLabel]"
+                // Close app with screenshot capture
+                executeAppBlockWithScreenshot(
+                    targetPkg = targetPkg,
+                    appLabel = appLabel,
+                    triggerReason = "[LOCKED APP: $appLabel]"
                 )
-
-                if (preferences.showToast.value) {
-                    mainHandler.post {
-                        Toast.makeText(
-                            applicationContext,
-                            "🛡 ScreenGuard: $appLabel is Locked",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
             }
             return
         }
@@ -194,89 +220,143 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                 targetPkg
             }
 
-            // Silent Screenshot & Cloudflare Dispatch
-            triggerIncidentScreenshotAndUpload(targetPkg, appLabel, matchedWord)
-
-            // Action: Kick user to Home Screen
-            performGlobalAction(GLOBAL_ACTION_HOME)
-
-            // Log Event locally
-            DetectionLogRepository.addLog(
-                packageName = targetPkg,
-                appName = appLabel,
-                matchedWord = matchedWord
+            // Close app with screenshot capture
+            executeAppBlockWithScreenshot(
+                targetPkg = targetPkg,
+                appLabel = appLabel,
+                triggerReason = matchedWord
             )
-
-            // Display feedback toast if enabled
-            if (preferences.showToast.value) {
-                mainHandler.post {
-                    Toast.makeText(
-                        applicationContext,
-                        "🛡 ScreenGuard: Closed $appLabel ('$matchedWord')",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
         }
     }
 
-    private fun triggerIncidentScreenshotAndUpload(targetPkg: String, appLabel: String, matchedWord: String) {
-        val endpoint = preferences.cloudflareEndpoint.value
-        if (endpoint.isBlank()) return
+    /**
+     * Fixes race condition (H3), rate limit (H4), and downscaling (M1).
+     * Takes screenshot first, kicks to Home upon completion, with a 250ms fallback.
+     */
+    private fun executeAppBlockWithScreenshot(
+        targetPkg: String,
+        appLabel: String,
+        triggerReason: String
+    ) {
+        val now = System.currentTimeMillis()
+        val canTakeScreenshot = (now - lastScreenshotTime > 5000L) && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        // Log locally immediately
+        DetectionLogRepository.addLog(
+            packageName = targetPkg,
+            appName = appLabel,
+            matchedWord = triggerReason
+        )
+
+        // Show feedback toast if enabled
+        if (preferences.showToast.value) {
+            mainHandler.post {
+                Toast.makeText(
+                    applicationContext,
+                    "🛡 ScreenGuard: Closed $appLabel ('$triggerReason')",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
+        if (canTakeScreenshot) {
+            lastScreenshotTime = now
+            var homeTriggered = false
+
+            fun safeGoHome() {
+                if (!homeTriggered) {
+                    homeTriggered = true
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                }
+            }
+
+            // 250ms safety fallback in case takeScreenshot hangs
+            val fallbackRunnable = Runnable { safeGoHome() }
+            mainHandler.postDelayed(fallbackRunnable, 250)
+
             try {
                 takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor, object : TakeScreenshotCallback {
                     override fun onSuccess(screenshotResult: ScreenshotResult) {
+                        mainHandler.removeCallbacks(fallbackRunnable)
+                        var bitmap: Bitmap? = null
+                        val hwBuffer = screenshotResult.hardwareBuffer
                         try {
-                            val hwBuffer = screenshotResult.hardwareBuffer
                             val colorSpace = screenshotResult.colorSpace
-                            val bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
-                            hwBuffer.close()
-
-                            CloudflareIncidentDispatcher.dispatchIncident(
-                                context = applicationContext,
-                                endpointUrl = endpoint,
-                                bitmap = bitmap,
-                                packageName = targetPkg,
-                                appName = appLabel,
-                                matchedWord = matchedWord
-                            )
+                            val rawBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                            if (rawBitmap != null) {
+                                val maxW = 720
+                                bitmap = if (rawBitmap.width > maxW) {
+                                    val ratio = maxW.toFloat() / rawBitmap.width
+                                    Bitmap.createScaledBitmap(rawBitmap, maxW, (rawBitmap.height * ratio).toInt(), true)
+                                } else {
+                                    rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                }
+                            }
                         } catch (e: Exception) {
-                            CloudflareIncidentDispatcher.dispatchIncident(
-                                context = applicationContext,
-                                endpointUrl = endpoint,
-                                bitmap = null,
-                                packageName = targetPkg,
-                                appName = appLabel,
-                                matchedWord = matchedWord
-                            )
+                            Log.e("ScreenGuardService", "Bitmap processing error", e)
+                        } finally {
+                            hwBuffer.close()
                         }
+
+                        // Dispatch incident to Firebase & Cloudflare
+                        dispatchToBackends(targetPkg, appLabel, triggerReason, bitmap)
+
+                        // Safely transition to home screen
+                        safeGoHome()
                     }
 
                     override fun onFailure(errorCode: Int) {
-                        CloudflareIncidentDispatcher.dispatchIncident(
-                            context = applicationContext,
-                            endpointUrl = endpoint,
-                            bitmap = null,
-                            packageName = targetPkg,
-                            appName = appLabel,
-                            matchedWord = "$matchedWord (Screenshot failed: $errorCode)"
-                        )
+                        mainHandler.removeCallbacks(fallbackRunnable)
+                        dispatchToBackends(targetPkg, appLabel, "$triggerReason (Screenshot error: $errorCode)", null)
+                        safeGoHome()
                     }
                 })
             } catch (e: Exception) {
-                // Safe ignore
+                mainHandler.removeCallbacks(fallbackRunnable)
+                safeGoHome()
+                dispatchToBackends(targetPkg, appLabel, triggerReason, null)
             }
         } else {
-            CloudflareIncidentDispatcher.dispatchIncident(
+            // Immediately kick to home if on screenshot cooldown or older Android
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            dispatchToBackends(targetPkg, appLabel, triggerReason, null)
+        }
+    }
+
+    private fun dispatchToBackends(
+        targetPkg: String,
+        appLabel: String,
+        matchedWord: String,
+        bitmap: Bitmap?
+    ) {
+        // 1. Firebase Dispatcher (Realtime Database + Storage)
+        try {
+            FirebaseIncidentDispatcher.dispatchIncident(
                 context = applicationContext,
-                endpointUrl = endpoint,
-                bitmap = null,
+                bitmap = bitmap,
                 packageName = targetPkg,
                 appName = appLabel,
                 matchedWord = matchedWord
             )
+        } catch (e: Exception) {
+            Log.e("ScreenGuardService", "Firebase dispatch error", e)
+        }
+
+        // 2. Cloudflare Dispatcher (if URL is set in preferences)
+        val cfEndpoint = preferences.cloudflareEndpoint.value
+        if (cfEndpoint.isNotBlank()) {
+            try {
+                CloudflareIncidentDispatcher.dispatchIncident(
+                    context = applicationContext,
+                    endpointUrl = cfEndpoint,
+                    bitmap = bitmap,
+                    packageName = targetPkg,
+                    appName = appLabel,
+                    matchedWord = matchedWord
+                )
+            } catch (e: Exception) {
+                Log.e("ScreenGuardService", "Cloudflare dispatch error", e)
+            }
         }
     }
 

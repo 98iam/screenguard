@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "incidents": {
+      ".read": true,
+      ".write": true
+    },
+    "pause_requests": {
+      ".read": true,
+      ".write": true
+    },
+    "devices": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}

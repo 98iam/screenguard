@@ -31,6 +31,12 @@ app/*.log
 config/*.log
 bat_*.txt
 crash_*.txt
+config/focus_allowance.json
+google-services.json
+.firebaserc
+opencode.json
+
+
 
 # Testing & Caches
 .pytest_cache/
