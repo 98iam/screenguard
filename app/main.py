@@ -312,7 +312,8 @@ def ensure_single_instance(mutex_name: str = "ScreenGuard_Global_Mutex") -> bool
 
 def main():
     import traceback
-    log_file = r"C:\Users\hzran\Downloads\window word blocker\startup_trace.log"
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_file = os.path.join(base_dir, "startup_trace.log")
     try:
         with open(log_file, "a") as f:
             f.write(f"[{os.getpid()}] Entered main()\n")

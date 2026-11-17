@@ -71,18 +71,10 @@
     "whitelisted_sites": [
         "wikipedia.org",
         "google.com",
-        "https://stenorj.com/",
-        "https://stenorj.com/typing-tests-list",
+        "github.com",
+        "stackoverflow.com",
         "chatgpt.com",
-        "claude.com",
-        "deepseek.com",
-        "https://chat.deepseek.com/",
-        "https://web.whatsapp.com/",
-        "https://law-study-guide.netlify.app/",
-        "https://www.rrbapply.gov.in/#/auth/landing",
-        "https://chat.z.ai/",
-        "https://notebook.google/",
-        "https://claude.ai",
-        "https://labs.google/fx/tools/flow"
+        "claude.ai",
+        "deepseek.com"
     ]
 }
