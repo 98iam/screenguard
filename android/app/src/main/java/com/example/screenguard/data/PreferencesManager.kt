@@ -108,6 +108,15 @@ class PreferencesManager(context: Context) {
     private val _uninstallProtection = MutableStateFlow(prefs.getBoolean(KEY_UNINSTALL_PROTECTION, true))
     val uninstallProtection: StateFlow<Boolean> = _uninstallProtection.asStateFlow()
 
+    private val _blockIncognito = MutableStateFlow(prefs.getBoolean(KEY_BLOCK_INCOGNITO, true))
+    val blockIncognito: StateFlow<Boolean> = _blockIncognito.asStateFlow()
+
+    private val _blockHistoryDeletion = MutableStateFlow(prefs.getBoolean(KEY_BLOCK_HISTORY_DELETION, true))
+    val blockHistoryDeletion: StateFlow<Boolean> = _blockHistoryDeletion.asStateFlow()
+
+    private val _protectPrivateDns = MutableStateFlow(prefs.getBoolean(KEY_PROTECT_PRIVATE_DNS, true))
+    val protectPrivateDns: StateFlow<Boolean> = _protectPrivateDns.asStateFlow()
+
     private val _pauseUntil = MutableStateFlow(prefs.getLong(KEY_PAUSE_UNTIL, 0L))
     val pauseUntil: StateFlow<Long> = _pauseUntil.asStateFlow()
 
@@ -189,6 +198,21 @@ class PreferencesManager(context: Context) {
     fun setUninstallProtection(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_UNINSTALL_PROTECTION, enabled).apply()
         _uninstallProtection.value = enabled
+    }
+
+    fun setBlockIncognito(block: Boolean) {
+        prefs.edit().putBoolean(KEY_BLOCK_INCOGNITO, block).apply()
+        _blockIncognito.value = block
+    }
+
+    fun setBlockHistoryDeletion(block: Boolean) {
+        prefs.edit().putBoolean(KEY_BLOCK_HISTORY_DELETION, block).apply()
+        _blockHistoryDeletion.value = block
+    }
+
+    fun setProtectPrivateDns(protect: Boolean) {
+        prefs.edit().putBoolean(KEY_PROTECT_PRIVATE_DNS, protect).apply()
+        _protectPrivateDns.value = protect
     }
 
     init {
@@ -335,6 +359,9 @@ class PreferencesManager(context: Context) {
         private const val KEY_GUARDIAN_PIN = "key_guardian_pin"
         private const val KEY_CLOUDFLARE_ENDPOINT = "key_cloudflare_endpoint"
         private const val KEY_UNINSTALL_PROTECTION = "key_uninstall_protection"
+        private const val KEY_BLOCK_INCOGNITO = "key_block_incognito"
+        private const val KEY_BLOCK_HISTORY_DELETION = "key_block_history_deletion"
+        private const val KEY_PROTECT_PRIVATE_DNS = "key_protect_private_dns"
         private const val KEY_PAUSE_UNTIL = "key_pause_until"
         private const val KEY_DEVICE_ID = "key_device_id"
 

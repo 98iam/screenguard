@@ -900,6 +900,10 @@ fun SettingsTab(
     val pauseUntil by preferences.pauseUntil.collectAsState()
     val isAppPaused = System.currentTimeMillis() < pauseUntil
 
+    val blockIncognito by preferences.blockIncognito.collectAsState()
+    val blockHistoryDeletion by preferences.blockHistoryDeletion.collectAsState()
+    val protectPrivateDns by preferences.protectPrivateDns.collectAsState()
+
     val dpm = remember { context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager }
     val adminComponent = remember { ComponentName(context, ScreenGuardDeviceAdminReceiver::class.java) }
     var isAdminActive by remember { mutableStateOf(dpm?.isAdminActive(adminComponent) == true) }
@@ -1245,6 +1249,233 @@ fun SettingsTab(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Text("Open", fontSize = 12.sp, color = Slate200)
+                    }
+                }
+            }
+        }
+
+        // 4b. Browser Incognito & History Guard Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.VisibilityOff,
+                                contentDescription = "Incognito",
+                                tint = RoseRed,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Incognito & History Guard",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (blockIncognito) EmeraldDark else RoseDark
+                        ) {
+                            Text(
+                                text = if (blockIncognito) "BLOCKED" else "OFF",
+                                color = if (blockIncognito) EmeraldGreen else RoseRed,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Closes secret tabs and prevents erasing browsing history across Chrome, Brave, Samsung Internet, Edge, Firefox, and Opera.",
+                        fontSize = 11.sp,
+                        color = Slate400
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Block Incognito & Private Tabs", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("Closes secret tabs immediately upon opening.", fontSize = 11.sp, color = Slate400)
+                        }
+                        Switch(
+                            checked = blockIncognito,
+                            onCheckedChange = { targetState ->
+                                requireGuardianAuth {
+                                    preferences.setBlockIncognito(targetState)
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = RoseRed
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Prevent Deleting Browser History", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("Blocks 'Clear browsing data' and history deletion screens.", fontSize = 11.sp, color = Slate400)
+                        }
+                        Switch(
+                            checked = blockHistoryDeletion,
+                            onCheckedChange = { targetState ->
+                                requireGuardianAuth {
+                                    preferences.setBlockHistoryDeletion(targetState)
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = RoseRed
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4c. Family DNS (System-Wide Adult Filter) Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Dns,
+                                contentDescription = "DNS",
+                                tint = SkyBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Family DNS Protection",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (protectPrivateDns) EmeraldDark else RoseDark
+                        ) {
+                            Text(
+                                text = if (protectPrivateDns) "LOCKED" else "UNLOCKED",
+                                color = if (protectPrivateDns) EmeraldGreen else RoseRed,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Android's built-in Private DNS filters adult sites across the entire phone (all apps, browsers, Wi-Fi & data) with 0% battery usage.",
+                        fontSize = 11.sp,
+                        color = Slate400
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Slate700
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Recommended Hostname (Cloudflare 1.1.1.3):", fontSize = 10.sp, color = Slate400)
+                                Text("family.cloudflare-dns.com", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = SkyBlue)
+                            }
+                            IconButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                    val clip = android.content.ClipData.newPlainText("Family DNS", "family.cloudflare-dns.com")
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Copied 'family.cloudflare-dns.com' to clipboard!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = SkyBlue, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            requireGuardianAuth {
+                                try {
+                                    context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                                } catch (e: Exception) {
+                                    context.startActivity(Intent(Settings.ACTION_SETTINGS))
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Open Android Network Settings to Configure", fontSize = 12.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Lock Private DNS in Settings", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("Kicks user to Home if anyone tries to turn off or change Private DNS in phone settings.", fontSize = 11.sp, color = Slate400)
+                        }
+                        Switch(
+                            checked = protectPrivateDns,
+                            onCheckedChange = { targetState ->
+                                requireGuardianAuth {
+                                    preferences.setProtectPrivateDns(targetState)
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = PrimaryBlue
+                            )
+                        )
                     }
                 }
             }
