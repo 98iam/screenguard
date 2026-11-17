@@ -1,11 +1,14 @@
 package com.example.screenguard
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -15,13 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,6 +31,8 @@ import androidx.compose.ui.unit.sp
 import com.example.screenguard.data.DetectionLog
 import com.example.screenguard.data.DetectionLogRepository
 import com.example.screenguard.data.PreferencesManager
+import com.example.screenguard.network.CloudflareIncidentDispatcher
+import com.example.screenguard.receiver.ScreenGuardDeviceAdminReceiver
 import com.example.screenguard.service.MatchMode
 import com.example.screenguard.theme.*
 
@@ -74,6 +73,11 @@ fun ScreenGuardApp(preferences: PreferencesManager) {
     var isAccessibilityEnabled by remember { mutableStateOf(isAccessibilityServiceEnabled(context)) }
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Dashboard & Words", "App Whitelist", "History", "Settings")
+
+    var showPinPrompt by remember { mutableStateOf(false) }
+    var pinPromptValue by remember { mutableStateOf("") }
+    var pinPromptError by remember { mutableStateOf<String?>(null) }
+    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     // Periodic / resumed check for accessibility permission
     LaunchedEffect(Unit) {
@@ -129,7 +133,16 @@ fun ScreenGuardApp(preferences: PreferencesManager) {
 
                         Switch(
                             checked = isEnabled,
-                            onCheckedChange = { preferences.setEnabled(it) },
+                            onCheckedChange = { targetState ->
+                                if (!targetState && preferences.hasGuardianPin() && !preferences.isGuardianUnlocked()) {
+                                    pendingAction = { preferences.setEnabled(false) }
+                                    pinPromptValue = ""
+                                    pinPromptError = null
+                                    showPinPrompt = true
+                                } else {
+                                    preferences.setEnabled(targetState)
+                                }
+                            },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
                                 checkedTrackColor = EmeraldGreen,
@@ -228,6 +241,50 @@ fun ScreenGuardApp(preferences: PreferencesManager) {
                 2 -> HistoryTab(detectionLogs)
                 3 -> SettingsTab(preferences, matchMode, showToast, isAccessibilityEnabled, blockPlayStore, blockedPackages)
             }
+        }
+
+        if (showPinPrompt) {
+            AlertDialog(
+                onDismissRequest = { showPinPrompt = false },
+                title = { Text("Guardian Verification", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Enter the Guardian PIN to modify protection settings:", fontSize = 13.sp, color = Slate400)
+                        OutlinedTextField(
+                            value = pinPromptValue,
+                            onValueChange = { pinPromptValue = it },
+                            singleLine = true,
+                            placeholder = { Text("Enter 4-6 Digit PIN") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (pinPromptError != null) {
+                            Text(pinPromptError!!, color = RoseRed, fontSize = 12.sp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (preferences.verifyGuardianPin(pinPromptValue.trim())) {
+                                preferences.unlockGuardianSession()
+                                showPinPrompt = false
+                                pendingAction?.invoke()
+                                pendingAction = null
+                            } else {
+                                pinPromptError = "Incorrect Guardian PIN"
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                    ) {
+                        Text("Unlock")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showPinPrompt = false }) {
+                        Text("Cancel", color = Slate400)
+                    }
+                }
+            )
         }
     }
 }

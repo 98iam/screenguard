@@ -99,6 +99,53 @@ class PreferencesManager(context: Context) {
     private val _showToast = MutableStateFlow(prefs.getBoolean(KEY_SHOW_TOAST, true))
     val showToast: StateFlow<Boolean> = _showToast.asStateFlow()
 
+    private val _guardianPin = MutableStateFlow(prefs.getString(KEY_GUARDIAN_PIN, "") ?: "")
+    val guardianPin: StateFlow<String> = _guardianPin.asStateFlow()
+
+    private val _cloudflareEndpoint = MutableStateFlow(prefs.getString(KEY_CLOUDFLARE_ENDPOINT, "") ?: "")
+    val cloudflareEndpoint: StateFlow<String> = _cloudflareEndpoint.asStateFlow()
+
+    private val _uninstallProtection = MutableStateFlow(prefs.getBoolean(KEY_UNINSTALL_PROTECTION, true))
+    val uninstallProtection: StateFlow<Boolean> = _uninstallProtection.asStateFlow()
+
+    // Temporary in-memory unlocked session
+    @Volatile
+    var isGuardianUnlockedUntil: Long = 0L
+
+    fun isGuardianUnlocked(): Boolean {
+        if (!hasGuardianPin()) return true
+        return System.currentTimeMillis() < isGuardianUnlockedUntil
+    }
+
+    fun unlockGuardianSession(durationMs: Long = 3 * 60 * 1000L) {
+        isGuardianUnlockedUntil = System.currentTimeMillis() + durationMs
+    }
+
+    fun lockGuardianSession() {
+        isGuardianUnlockedUntil = 0L
+    }
+
+    fun hasGuardianPin(): Boolean = _guardianPin.value.isNotBlank()
+
+    fun setGuardianPin(pin: String) {
+        prefs.edit().putString(KEY_GUARDIAN_PIN, pin).apply()
+        _guardianPin.value = pin
+    }
+
+    fun verifyGuardianPin(pin: String): Boolean {
+        return _guardianPin.value.isNotEmpty() && _guardianPin.value == pin
+    }
+
+    fun setCloudflareEndpoint(url: String) {
+        prefs.edit().putString(KEY_CLOUDFLARE_ENDPOINT, url).apply()
+        _cloudflareEndpoint.value = url
+    }
+
+    fun setUninstallProtection(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UNINSTALL_PROTECTION, enabled).apply()
+        _uninstallProtection.value = enabled
+    }
+
     init {
         // Ensure initial defaults include preset words if empty or first run
         if (!prefs.contains(KEY_BLOCKED_WORDS)) {
@@ -240,6 +287,9 @@ class PreferencesManager(context: Context) {
         private const val KEY_WHITELIST = "key_whitelist"
         private const val KEY_MATCH_MODE = "key_match_mode"
         private const val KEY_SHOW_TOAST = "key_show_toast"
+        private const val KEY_GUARDIAN_PIN = "key_guardian_pin"
+        private const val KEY_CLOUDFLARE_ENDPOINT = "key_cloudflare_endpoint"
+        private const val KEY_UNINSTALL_PROTECTION = "key_uninstall_protection"
 
         @Volatile
         private var instance: PreferencesManager? = null
