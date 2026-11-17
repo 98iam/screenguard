@@ -11,6 +11,8 @@ import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -83,12 +85,9 @@ fun ScreenGuardApp(preferences: PreferencesManager) {
     var pinPromptError by remember { mutableStateOf<String?>(null) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
-    // Periodic / resumed check for accessibility permission
-    LaunchedEffect(Unit) {
-        while (true) {
-            isAccessibilityEnabled = isAccessibilityServiceEnabled(context)
-            kotlinx.coroutines.delay(1500)
-        }
+    // Check accessibility status when app is resumed from Android Settings
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        isAccessibilityEnabled = isAccessibilityServiceEnabled(context)
     }
 
     Scaffold(
@@ -908,12 +907,9 @@ fun SettingsTab(
     val adminComponent = remember { ComponentName(context, ScreenGuardDeviceAdminReceiver::class.java) }
     var isAdminActive by remember { mutableStateOf(dpm?.isAdminActive(adminComponent) == true) }
 
-    // Periodic check for device admin status
-    LaunchedEffect(Unit) {
-        while (true) {
-            isAdminActive = dpm?.isAdminActive(adminComponent) == true
-            kotlinx.coroutines.delay(2000)
-        }
+    // Check device admin status when resumed from Android Settings
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        isAdminActive = dpm?.isAdminActive(adminComponent) == true
     }
 
     LazyColumn(

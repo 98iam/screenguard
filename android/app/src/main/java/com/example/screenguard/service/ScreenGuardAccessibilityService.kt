@@ -26,8 +26,15 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     private lateinit var preferences: PreferencesManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastTriggerTime = 0L
+    private var lastTextScanTime = 0L
     private var lastScreenshotTime = 0L
     private var pauseListener: ValueEventListener? = null
+
+    // Cache home launchers to prevent expensive Binder IPC calls on every node
+    @Volatile
+    private var cachedHomeLaunchers: Set<String> = emptySet()
+    @Volatile
+    private var lastHomeLaunchersRefreshTime: Long = 0L
 
     // Known critical system packages that should never be closed
     private val defaultProtectedPackages = setOf(
@@ -110,13 +117,19 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     }
 
     private fun isHomeLauncher(pkg: String): Boolean {
-        return try {
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-            val resolveInfos = packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-            resolveInfos.any { it.activityInfo?.packageName?.equals(pkg, ignoreCase = true) == true }
-        } catch (e: Exception) {
-            false
+        if (pkg.isEmpty()) return false
+        val now = System.currentTimeMillis()
+        if (now - lastHomeLaunchersRefreshTime > 60_000L || cachedHomeLaunchers.isEmpty()) {
+            try {
+                val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                val resolveInfos = packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+                cachedHomeLaunchers = resolveInfos.mapNotNull { it.activityInfo?.packageName?.lowercase() }.toSet()
+                lastHomeLaunchersRefreshTime = now
+            } catch (e: Exception) {
+                // Keep existing cache on failure
+            }
         }
+        return cachedHomeLaunchers.contains(pkg.lowercase())
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -235,14 +248,17 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         // 4. Ignore our own app & system protected apps
         if (isPackageProtected(eventPkg) || isPackageProtected(rootPkg)) return
 
-        // 5. Throttle text matching triggers
-        if (now - lastTriggerTime < 800) return
+        // 5. Throttle text matching triggers during scrolling/typing
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            if (now - lastTextScanTime < 800) return
+        }
+        lastTextScanTime = now
         if (rootNode == null) return
 
-        // 6. Extract text from screen node hierarchy
+        // 6. Extract text from screen node hierarchy (max 200 nodes for battery efficiency)
         val extractedText = StringBuilder()
         try {
-            extractTextRecursive(rootNode, extractedText, maxNodes = 400)
+            extractTextRecursive(rootNode, extractedText, maxNodes = 200)
         } catch (e: Exception) {
             // Safe fallback
         }
@@ -303,14 +319,13 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 7. Detect blocked words
+        // 7. Fast Single-Pass Word Matching (Stops on first match)
         val blockedWords = preferences.blockedWords.value
         val matchMode = preferences.matchMode.value
-        val matches = WordDetector.findMatches(fullText, blockedWords, matchMode)
+        val matchedWord = WordDetector.findFirstMatch(fullText, blockedWords, matchMode)
 
-        if (matches.isNotEmpty()) {
+        if (matchedWord != null) {
             lastTriggerTime = now
-            val matchedWord = matches.first()
             val targetPkg = if (rootPkg.isNotEmpty() && !isPackageProtected(rootPkg)) rootPkg else eventPkg
 
             val appLabel = try {
@@ -385,10 +400,15 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                             val colorSpace = screenshotResult.colorSpace
                             val rawBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
                             if (rawBitmap != null) {
-                                val maxW = 720
-                                bitmap = if (rawBitmap.width > maxW) {
-                                    val ratio = maxW.toFloat() / rawBitmap.width
-                                    Bitmap.createScaledBitmap(rawBitmap, maxW, (rawBitmap.height * ratio).toInt(), true)
+                                val maxDimension = 640
+                                bitmap = if (rawBitmap.width > maxDimension || rawBitmap.height > maxDimension) {
+                                    val ratio = minOf(
+                                        maxDimension.toFloat() / rawBitmap.width,
+                                        maxDimension.toFloat() / rawBitmap.height
+                                    )
+                                    val targetW = (rawBitmap.width * ratio).toInt().coerceAtLeast(1)
+                                    val targetH = (rawBitmap.height * ratio).toInt().coerceAtLeast(1)
+                                    Bitmap.createScaledBitmap(rawBitmap, targetW, targetH, true)
                                 } else {
                                     rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
                                 }
@@ -465,7 +485,7 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         if (node == null || count[0] >= maxNodes) return
 
         val nodePkg = node.packageName?.toString()
-        if (nodePkg != null && isPackageProtected(nodePkg)) {
+        if (!nodePkg.isNullOrEmpty() && isPackageProtected(nodePkg)) {
             return
         }
 
@@ -497,6 +517,13 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         _isServiceRunning.value = false
+        try {
+            FirebaseIncidentDispatcher.detachPauseStatusListener(applicationContext, pauseListener)
+        } catch (e: Exception) {
+            // Ignore
+        }
+        pauseListener = null
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     companion object {

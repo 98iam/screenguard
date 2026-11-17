@@ -196,4 +196,20 @@ object FirebaseIncidentDispatcher {
         deviceRef.addValueEventListener(listener)
         return listener
     }
+
+    /**
+     * Cleanly detaches the pause status listener to avoid memory leaks.
+     */
+    fun detachPauseStatusListener(context: Context, listener: ValueEventListener?) {
+        if (listener == null) return
+        try {
+            val prefs = PreferencesManager.getInstance(context)
+            val deviceId = prefs.getDeviceId()
+            val db = FirebaseDatabase.getInstance()
+            db.getReference("devices").child(deviceId).removeEventListener(listener)
+            Log.d(TAG, "Detached Firebase pause listener")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error detaching pause listener", e)
+        }
+    }
 }
