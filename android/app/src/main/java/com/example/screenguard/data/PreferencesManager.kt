@@ -87,7 +87,7 @@ class PreferencesManager(context: Context) {
     val blockedWords: StateFlow<Set<String>> = _blockedWords.asStateFlow()
 
     private val _whitelist = MutableStateFlow(
-        prefs.getStringSet(KEY_WHITELIST, setOf("com.example.screenguard", "com.android.settings", "com.android.systemui")) ?: emptySet()
+        prefs.getStringSet(KEY_WHITELIST, setOf("com.example.screenguard", "com.android.systemui")) ?: setOf("com.example.screenguard", "com.android.systemui")
     )
     val whitelist: StateFlow<Set<String>> = _whitelist.asStateFlow()
 
@@ -224,6 +224,12 @@ class PreferencesManager(context: Context) {
         if (!prefs.contains(KEY_BLOCKED_PACKAGES)) {
             prefs.edit().putStringSet(KEY_BLOCKED_PACKAGES, DEFAULT_BLOCKED_PACKAGES).apply()
             _blockedPackages.value = DEFAULT_BLOCKED_PACKAGES
+        }
+        // Ensure com.android.settings is purged from whitelist so Settings Guard functions
+        val currentWhitelist = _whitelist.value.toMutableSet()
+        if (currentWhitelist.remove("com.android.settings")) {
+            prefs.edit().putStringSet(KEY_WHITELIST, currentWhitelist).apply()
+            _whitelist.value = currentWhitelist
         }
     }
 

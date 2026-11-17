@@ -204,10 +204,29 @@ class ScreenGuardAPIHandler(BaseHTTPRequestHandler):
         # Suppress noisy standard HTTP request console spam
         pass
 
+    def _is_origin_allowed(self, origin: str) -> bool:
+        if not origin:
+            return True
+        origin_lower = origin.lower().strip()
+        # Allow browser extensions (Chrome, Edge, Firefox)
+        if origin_lower.startswith("chrome-extension://") or origin_lower.startswith("moz-extension://"):
+            return True
+        # Allow local origin requests
+        if origin_lower in (
+            "http://localhost", "https://localhost",
+            "http://127.0.0.1", "https://127.0.0.1",
+            "null"
+        ):
+            return True
+        return False
+
     def _send_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        origin = self.headers.get("Origin", "")
+        if self._is_origin_allowed(origin):
+            self.send_header("Access-Control-Allow-Origin", origin if origin else "*")
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Connection", "close")
 
     def _send_json_response(self, code: int, data: dict):
@@ -225,6 +244,11 @@ class ScreenGuardAPIHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         try:
+            origin = self.headers.get("Origin", "")
+            if origin and not self._is_origin_allowed(origin):
+                self.send_response(403)
+                self.end_headers()
+                return
             self.send_response(204)
             self._send_cors_headers()
             self.send_header("Content-Length", "0")
@@ -234,6 +258,11 @@ class ScreenGuardAPIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            origin = self.headers.get("Origin", "")
+            if origin and not self._is_origin_allowed(origin):
+                self._send_json_response(403, {"error": "Cross-origin requests from untrusted web pages are forbidden"})
+                return
+
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
 
@@ -256,6 +285,11 @@ class ScreenGuardAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            origin = self.headers.get("Origin", "")
+            if origin and not self._is_origin_allowed(origin):
+                self._send_json_response(403, {"error": "Cross-origin requests from untrusted web pages are forbidden"})
+                return
+
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
 

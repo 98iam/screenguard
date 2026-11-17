@@ -1,7 +1,10 @@
 package com.example.screenguard.service
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
@@ -16,6 +19,7 @@ import com.example.screenguard.data.DetectionLogRepository
 import com.example.screenguard.data.PreferencesManager
 import com.example.screenguard.network.CloudflareIncidentDispatcher
 import com.example.screenguard.network.FirebaseIncidentDispatcher
+import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +33,28 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     private var lastTextScanTime = 0L
     private var lastScreenshotTime = 0L
     private var pauseListener: ValueEventListener? = null
+
+    // Screen state listener to put Firebase RTDB offline during screen off (saves 100% standby radio drain)
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    try {
+                        FirebaseDatabase.getInstance().goOffline()
+                    } catch (e: Exception) {
+                        Log.w("ScreenGuardService", "Failed to pause Firebase RTDB", e)
+                    }
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    try {
+                        FirebaseDatabase.getInstance().goOnline()
+                    } catch (e: Exception) {
+                        Log.w("ScreenGuardService", "Failed to resume Firebase RTDB", e)
+                    }
+                }
+            }
+        }
+    }
 
     // Cache home launchers to prevent expensive Binder IPC calls on every node
     @Volatile
@@ -99,6 +125,17 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.w("ScreenGuardService", "Failed to attach Firebase pause listener", e)
         }
+
+        // Register screen on/off receiver to save battery by sleeping RTDB connection while screen is off
+        try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+            }
+            registerReceiver(screenStateReceiver, filter)
+        } catch (e: Exception) {
+            Log.w("ScreenGuardService", "Failed to register screen state receiver", e)
+        }
     }
 
     private fun isPackageProtected(pkg: String): Boolean {
@@ -143,22 +180,37 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
 
         val eventPkg = event.packageName?.toString() ?: ""
         val now = System.currentTimeMillis()
-        val rootNode = rootInActiveWindow ?: event.source
-        val rootPkg = rootNode?.packageName?.toString() ?: eventPkg
+
+        var rootNode: AccessibilityNodeInfo? = null
+        var rootNodeFetched = false
+        fun getRoot(): AccessibilityNodeInfo? {
+            if (!rootNodeFetched) {
+                rootNode = rootInActiveWindow ?: event.source
+                rootNodeFetched = true
+            }
+            return rootNode
+        }
 
         // 1. Anti-Tamper, Anti-Uninstall & Private DNS Settings Guard
-        val isSettingsOrInstaller = settingsAndInstallerPackages.contains(eventPkg) ||
-                settingsAndInstallerPackages.contains(rootPkg)
+        val isSettingsEvent = settingsAndInstallerPackages.contains(eventPkg)
+        val uninstallOn = preferences.uninstallProtection.value
+        val dnsOn = preferences.protectPrivateDns.value
+
+        val isSettingsOrInstaller = isSettingsEvent || run {
+            val rPkg = getRoot()?.packageName?.toString() ?: ""
+            settingsAndInstallerPackages.contains(rPkg)
+        }
 
         if (isSettingsOrInstaller) {
-            if (!preferences.isGuardianUnlocked()) {
+            if (!preferences.isGuardianUnlocked() && (uninstallOn || dnsOn)) {
+                val node = getRoot()
                 val sb = StringBuilder()
                 try {
-                    extractTextRecursive(rootNode, sb, maxNodes = 120)
+                    extractTextRecursive(node, sb, maxNodes = 120)
                 } catch (e: Exception) {}
                 val text = sb.toString().lowercase()
 
-                if (preferences.uninstallProtection.value) {
+                if (uninstallOn) {
                     val hasScreenGuard = text.contains("screenguard")
                     val hasDangerAction = text.contains("force stop") ||
                             text.contains("uninstall") ||
@@ -187,7 +239,7 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                if (preferences.protectPrivateDns.value) {
+                if (dnsOn) {
                     val isDnsTamper = text.contains("private dns") ||
                             (text.contains("dns") && (text.contains("hostname") || text.contains("provider") || text.contains("cloudflare") || text.contains("adguard")))
 
@@ -216,12 +268,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         // 3. Instant Blacklisted App Check (e.g. Google Play Store or custom apps)
         val blockedPackages = preferences.blockedPackages.value
         val isEventPkgBlocked = blockedPackages.any { it.equals(eventPkg, ignoreCase = true) }
-        val isRootPkgBlocked = blockedPackages.any { it.equals(rootPkg, ignoreCase = true) }
 
-        if (isEventPkgBlocked || isRootPkgBlocked) {
+        if (isEventPkgBlocked) {
             if (now - lastTriggerTime > 500) {
                 lastTriggerTime = now
-                val targetPkg = if (isRootPkgBlocked) rootPkg else eventPkg
+                val targetPkg = eventPkg
 
                 val appLabel = if (targetPkg == "com.android.vending") {
                     "Google Play Store"
@@ -245,20 +296,48 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 4. Ignore our own app & system protected apps
-        if (isPackageProtected(eventPkg) || isPackageProtected(rootPkg)) return
+        // 4. Ignore our own app & system protected apps early
+        if (isPackageProtected(eventPkg)) return
 
         // 5. Throttle text matching triggers during scrolling/typing
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             if (now - lastTextScanTime < 800) return
         }
         lastTextScanTime = now
-        if (rootNode == null) return
+
+        val node = getRoot() ?: return
+        val rootPkg = node.packageName?.toString() ?: eventPkg
+
+        // Re-check root package in case event was from child view with different root
+        if (blockedPackages.any { it.equals(rootPkg, ignoreCase = true) }) {
+            if (now - lastTriggerTime > 500) {
+                lastTriggerTime = now
+                val appLabel = if (rootPkg == "com.android.vending") {
+                    "Google Play Store"
+                } else {
+                    try {
+                        val pm = packageManager
+                        val appInfo = pm.getApplicationInfo(rootPkg, 0)
+                        pm.getApplicationLabel(appInfo).toString()
+                    } catch (e: Exception) {
+                        rootPkg
+                    }
+                }
+                executeAppBlockWithScreenshot(
+                    targetPkg = rootPkg,
+                    appLabel = appLabel,
+                    triggerReason = "[LOCKED APP: $appLabel]"
+                )
+            }
+            return
+        }
+
+        if (isPackageProtected(rootPkg)) return
 
         // 6. Extract text from screen node hierarchy (max 200 nodes for battery efficiency)
         val extractedText = StringBuilder()
         try {
-            extractTextRecursive(rootNode, extractedText, maxNodes = 200)
+            extractTextRecursive(node, extractedText, maxNodes = 200)
         } catch (e: Exception) {
             // Safe fallback
         }
@@ -408,9 +487,10 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                                     )
                                     val targetW = (rawBitmap.width * ratio).toInt().coerceAtLeast(1)
                                     val targetH = (rawBitmap.height * ratio).toInt().coerceAtLeast(1)
-                                    Bitmap.createScaledBitmap(rawBitmap, targetW, targetH, true)
+                                    val scaled = Bitmap.createScaledBitmap(rawBitmap, targetW, targetH, true)
+                                    scaled.copy(Bitmap.Config.RGB_565, false) ?: scaled
                                 } else {
-                                    rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                    rawBitmap.copy(Bitmap.Config.RGB_565, false) ?: rawBitmap
                                 }
                             }
                         } catch (e: Exception) {
@@ -484,10 +564,8 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     private fun extractTextRecursive(node: AccessibilityNodeInfo?, buffer: StringBuilder, maxNodes: Int, count: IntArray = intArrayOf(0)) {
         if (node == null || count[0] >= maxNodes) return
 
-        val nodePkg = node.packageName?.toString()
-        if (!nodePkg.isNullOrEmpty() && isPackageProtected(nodePkg)) {
-            return
-        }
+        // Skip invisible nodes (e.g. off-screen or hidden views) to save IPC and CPU
+        if (!node.isVisibleToUser) return
 
         count[0]++
 
@@ -517,6 +595,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         _isServiceRunning.value = false
+        try {
+            unregisterReceiver(screenStateReceiver)
+        } catch (e: Exception) {
+            // Ignore
+        }
         try {
             FirebaseIncidentDispatcher.detachPauseStatusListener(applicationContext, pauseListener)
         } catch (e: Exception) {
