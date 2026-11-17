@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak
+venv/
+env/
+.env
+
+# Distribution / Packaging
+dist/
+build/
+*.exe
+*.apk
+ScreenGuard.spec
+ScreenGuard_debug.spec
+
+# Android & Gradle
+.gradle/
+**/build/
+android/.gradle/
+android/app/build/
+local.properties
+*.keystore
+*.jks
+
+# Logs & temp text files
+*.log
+logs/
+app/*.log
+config/*.log
+bat_*.txt
+crash_*.txt
+
+# Testing & Caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# System / IDE
+.idea/
+.vscode/
+*.suo
+*.user
+Thumbs.db

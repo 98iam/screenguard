@@ -1,0 +1,253 @@
+package com.example.screenguard.data
+
+import android.content.Context
+import android.content.SharedPreferences
+import com.example.screenguard.service.MatchMode
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+val PRESET_18PLUS_MANHWA = setOf(
+    "pornhwa",
+    "18+ Manhwa",
+    "Adult Manhwa",
+    "Adult Webtoon",
+    "Adult Manhua",
+    "Mature 18+",
+    "18+ Comic",
+    "Smut Manhwa",
+    "Ero Manhwa",
+    "Eromanga",
+    "Hentai",
+    "Doujinshi",
+    "Doujin",
+    "Ecchi",
+    "Netorare",
+    "NTR",
+    "Uncensored Manhwa",
+    "Raw 18+",
+    "Lezhin 18+",
+    "Toptoon 18+",
+    "Toomics 18+",
+    "NSFW Comic",
+    "NSFW Webtoon",
+    "Erotic Webtoon",
+    "Hentai Manga",
+    "Manhwa18",
+    "Manhwa68",
+    "ManyToon",
+    "Hiperdex",
+    "Manga18fx",
+    "Toonily18",
+    "Webtoon18",
+    "Pornhwa.me",
+    "ManhwaHentai",
+    "ReadHentai",
+    "stepmom",
+    "stepsister",
+    "noona's",
+    "Secret Class",
+    "Silent War",
+    "Sexercise",
+    "Touch to Unlock",
+    "Close as Neighbors",
+    "uncensored",
+    "adult",
+    "mature",
+    "18+",
+    "erotic",
+    "nsfw",
+    "smut",
+    "cookie",
+    "TEST_BLOCKED_WORD"
+)
+
+val DEFAULT_BLOCKED_PACKAGES = setOf(
+    "com.android.vending", // Google Play Store
+    "chat.kijang.manga.cookie.browser" // Cookie Manga
+)
+
+class PreferencesManager(context: Context) {
+    private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private val _isEnabled = MutableStateFlow(prefs.getBoolean(KEY_ENABLED, true))
+    val isEnabled: StateFlow<Boolean> = _isEnabled.asStateFlow()
+
+    private val _blockPlayStore = MutableStateFlow(prefs.getBoolean(KEY_BLOCK_PLAY_STORE, true))
+    val blockPlayStore: StateFlow<Boolean> = _blockPlayStore.asStateFlow()
+
+    private val _blockedPackages = MutableStateFlow(
+        prefs.getStringSet(KEY_BLOCKED_PACKAGES, DEFAULT_BLOCKED_PACKAGES) ?: DEFAULT_BLOCKED_PACKAGES
+    )
+    val blockedPackages: StateFlow<Set<String>> = _blockedPackages.asStateFlow()
+
+    private val _blockedWords = MutableStateFlow(
+        prefs.getStringSet(KEY_BLOCKED_WORDS, PRESET_18PLUS_MANHWA) ?: PRESET_18PLUS_MANHWA
+    )
+    val blockedWords: StateFlow<Set<String>> = _blockedWords.asStateFlow()
+
+    private val _whitelist = MutableStateFlow(
+        prefs.getStringSet(KEY_WHITELIST, setOf("com.example.screenguard", "com.android.settings", "com.android.systemui")) ?: emptySet()
+    )
+    val whitelist: StateFlow<Set<String>> = _whitelist.asStateFlow()
+
+    private val _matchMode = MutableStateFlow(
+        MatchMode.fromId(prefs.getString(KEY_MATCH_MODE, MatchMode.EXACT_WORD.id) ?: MatchMode.EXACT_WORD.id)
+    )
+    val matchMode: StateFlow<MatchMode> = _matchMode.asStateFlow()
+
+    private val _showToast = MutableStateFlow(prefs.getBoolean(KEY_SHOW_TOAST, true))
+    val showToast: StateFlow<Boolean> = _showToast.asStateFlow()
+
+    init {
+        // Ensure initial defaults include preset words if empty or first run
+        if (!prefs.contains(KEY_BLOCKED_WORDS)) {
+            prefs.edit().putStringSet(KEY_BLOCKED_WORDS, PRESET_18PLUS_MANHWA).apply()
+            _blockedWords.value = PRESET_18PLUS_MANHWA
+        }
+        if (!prefs.contains(KEY_BLOCKED_PACKAGES)) {
+            prefs.edit().putStringSet(KEY_BLOCKED_PACKAGES, DEFAULT_BLOCKED_PACKAGES).apply()
+            _blockedPackages.value = DEFAULT_BLOCKED_PACKAGES
+        }
+    }
+
+    fun setEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()
+        _isEnabled.value = enabled
+    }
+
+    fun setBlockPlayStore(block: Boolean) {
+        prefs.edit().putBoolean(KEY_BLOCK_PLAY_STORE, block).apply()
+        _blockPlayStore.value = block
+        val current = _blockedPackages.value.toMutableSet()
+        if (block) {
+            current.add("com.android.vending")
+        } else {
+            current.remove("com.android.vending")
+        }
+        prefs.edit().putStringSet(KEY_BLOCKED_PACKAGES, current).apply()
+        _blockedPackages.value = current
+    }
+
+    fun addBlockedPackage(pkg: String): Boolean {
+        val clean = pkg.trim()
+        if (clean.isEmpty()) return false
+        val current = _blockedPackages.value.toMutableSet()
+        if (current.add(clean)) {
+            prefs.edit().putStringSet(KEY_BLOCKED_PACKAGES, current).apply()
+            _blockedPackages.value = current
+            return true
+        }
+        return false
+    }
+
+    fun removeBlockedPackage(pkg: String): Boolean {
+        val current = _blockedPackages.value.toMutableSet()
+        if (current.remove(pkg)) {
+            prefs.edit().putStringSet(KEY_BLOCKED_PACKAGES, current).apply()
+            _blockedPackages.value = current
+            return true
+        }
+        return false
+    }
+
+    fun load18PlusPreset(): Int {
+        val current = _blockedWords.value.toMutableSet()
+        var addedCount = 0
+        for (word in PRESET_18PLUS_MANHWA) {
+            if (current.add(word)) {
+                addedCount++
+            }
+        }
+        prefs.edit().putStringSet(KEY_BLOCKED_WORDS, current).apply()
+        _blockedWords.value = current
+        return addedCount
+    }
+
+    fun addBlockedWord(word: String): Boolean {
+        val clean = word.trim()
+        if (clean.isEmpty()) return false
+        val current = _blockedWords.value.toMutableSet()
+        if (current.add(clean)) {
+            prefs.edit().putStringSet(KEY_BLOCKED_WORDS, current).apply()
+            _blockedWords.value = current
+            return true
+        }
+        return false
+    }
+
+    fun removeBlockedWord(word: String): Boolean {
+        val current = _blockedWords.value.toMutableSet()
+        if (current.remove(word)) {
+            prefs.edit().putStringSet(KEY_BLOCKED_WORDS, current).apply()
+            _blockedWords.value = current
+            return true
+        }
+        return false
+    }
+
+    fun editBlockedWord(oldWord: String, newWord: String): Boolean {
+        val cleanNew = newWord.trim()
+        if (cleanNew.isEmpty()) return false
+        val current = _blockedWords.value.toMutableSet()
+        if (current.remove(oldWord)) {
+            current.add(cleanNew)
+            prefs.edit().putStringSet(KEY_BLOCKED_WORDS, current).apply()
+            _blockedWords.value = current
+            return true
+        }
+        return false
+    }
+
+    fun addWhitelistPackage(pkg: String): Boolean {
+        val clean = pkg.trim()
+        if (clean.isEmpty()) return false
+        val current = _whitelist.value.toMutableSet()
+        if (current.add(clean)) {
+            prefs.edit().putStringSet(KEY_WHITELIST, current).apply()
+            _whitelist.value = current
+            return true
+        }
+        return false
+    }
+
+    fun removeWhitelistPackage(pkg: String): Boolean {
+        val current = _whitelist.value.toMutableSet()
+        if (current.remove(pkg)) {
+            prefs.edit().putStringSet(KEY_WHITELIST, current).apply()
+            _whitelist.value = current
+            return true
+        }
+        return false
+    }
+
+    fun setMatchMode(mode: MatchMode) {
+        prefs.edit().putString(KEY_MATCH_MODE, mode.id).apply()
+        _matchMode.value = mode
+    }
+
+    fun setShowToast(show: Boolean) {
+        prefs.edit().putBoolean(KEY_SHOW_TOAST, show).apply()
+        _showToast.value = show
+    }
+
+    companion object {
+        private const val PREFS_NAME = "screenguard_prefs"
+        private const val KEY_ENABLED = "key_enabled"
+        private const val KEY_BLOCK_PLAY_STORE = "key_block_play_store"
+        private const val KEY_BLOCKED_PACKAGES = "key_blocked_packages"
+        private const val KEY_BLOCKED_WORDS = "key_blocked_words"
+        private const val KEY_WHITELIST = "key_whitelist"
+        private const val KEY_MATCH_MODE = "key_match_mode"
+        private const val KEY_SHOW_TOAST = "key_show_toast"
+
+        @Volatile
+        private var instance: PreferencesManager? = null
+
+        fun getInstance(context: Context): PreferencesManager {
+            return instance ?: synchronized(this) {
+                instance ?: PreferencesManager(context.applicationContext).also { instance = it }
+            }
+        }
+    }
+}

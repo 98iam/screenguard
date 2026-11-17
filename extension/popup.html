@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScreenGuard Focus Sync</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="brand">
+        <img src="icons/icon32.png" alt="ScreenGuard" class="brand-icon">
+        <span class="brand-name">ScreenGuard</span>
+      </div>
+      <div class="conn-pill" id="connStatus">
+        <span class="dot"></span>
+        <span class="text">Checking...</span>
+      </div>
+    </div>
+
+    <!-- Active Tab Status -->
+    <div class="card tab-card">
+      <div class="tab-header">
+        <span class="card-label">CURRENT TAB</span>
+        <span class="site-tag" id="siteTag">Detecting...</span>
+      </div>
+      <div class="tab-domain" id="tabDomain">--</div>
+    </div>
+
+    <!-- Timer / Focus Allowance -->
+    <div class="card timer-card">
+      <div class="timer-header">
+        <span class="card-label">TODAY'S FOCUS ALLOWANCE</span>
+        <span class="focus-window-tag" id="focusWindowTag">4 AM – 8 PM</span>
+      </div>
+      <div class="timer-display">
+        <span class="timer-value" id="remainingTimer">--:--</span>
+        <span class="timer-label">remaining</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressFill" style="width: 0%;"></div>
+      </div>
+      <div class="timer-meta">
+        <span id="usedMeta">Used: 0m / 60m</span>
+        <span id="stateMeta">Active</span>
+      </div>
+    </div>
+
+    <!-- Study Whitelist Info -->
+    <div class="whitelist-info">
+      <span class="info-icon">ℹ️</span>
+      <span class="info-text">Whitelisted platforms (DeepSeek, ChatGPT, Claude, StenorJ) are <strong>100% unlimited</strong> and never drain your allowance.</span>
+    </div>
+
+    <!-- Action Button -->
+    <button class="btn-action" id="openAppBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      Open ScreenGuard App
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

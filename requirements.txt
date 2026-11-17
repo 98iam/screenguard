@@ -1,0 +1,17 @@
+# ScreenGuard Requirements
+mss>=10.0.0
+Pillow>=10.0.0
+psutil>=5.9.0
+pywin32>=306
+winocr>=0.0.15
+winrt-runtime>=3.2.1
+winrt-windows-foundation>=3.2.1
+winrt-windows-foundation-collections>=3.2.1
+winrt-windows-globalization>=3.2.1
+winrt-windows-graphics-imaging>=3.2.1
+winrt-windows-media-ocr>=3.2.1
+winrt-windows-storage-streams>=3.2.1
+keyboard>=0.13.5
+pystray>=0.19.5
+pytest>=8.0.0
+pyinstaller>=6.0.0
