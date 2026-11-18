@@ -215,6 +215,52 @@ class PreferencesManager(context: Context) {
         _protectPrivateDns.value = protect
     }
 
+    private val _parentId = MutableStateFlow(prefs.getString(KEY_PARENT_ID, "") ?: "")
+    val parentId: StateFlow<String> = _parentId.asStateFlow()
+
+    private val _parentName = MutableStateFlow(prefs.getString(KEY_PARENT_NAME, "Guardian") ?: "Guardian")
+    val parentName: StateFlow<String> = _parentName.asStateFlow()
+
+    private val _pairedChildId = MutableStateFlow(prefs.getString(KEY_PAIRED_CHILD_ID, "") ?: "")
+    val pairedChildId: StateFlow<String> = _pairedChildId.asStateFlow()
+
+    private val _freeTimeUntil = MutableStateFlow(prefs.getLong(KEY_FREE_TIME_UNTIL, 0L))
+    val freeTimeUntil: StateFlow<Long> = _freeTimeUntil.asStateFlow()
+
+    private val _uninstallUnlockedUntil = MutableStateFlow(prefs.getLong(KEY_UNINSTALL_UNLOCKED_UNTIL, 0L))
+    val uninstallUnlockedUntil: StateFlow<Long> = _uninstallUnlockedUntil.asStateFlow()
+
+    fun getParentId(): String = _parentId.value
+    fun getParentName(): String = _parentName.value
+    fun getPairedChildId(): String = _pairedChildId.value
+
+    fun setParentPairing(pId: String, pName: String) {
+        prefs.edit().putString(KEY_PARENT_ID, pId).putString(KEY_PARENT_NAME, pName).apply()
+        _parentId.value = pId
+        _parentName.value = pName
+    }
+
+    fun setPairedChild(cId: String) {
+        prefs.edit().putString(KEY_PAIRED_CHILD_ID, cId).apply()
+        _pairedChildId.value = cId
+    }
+
+    fun isPairedWithParent(): Boolean = _parentId.value.isNotEmpty()
+
+    fun setFreeTimeUntil(timestamp: Long) {
+        prefs.edit().putLong(KEY_FREE_TIME_UNTIL, timestamp).apply()
+        _freeTimeUntil.value = timestamp
+    }
+
+    fun isFreeTimeActive(): Boolean = System.currentTimeMillis() < _freeTimeUntil.value
+
+    fun setUninstallUnlockedUntil(timestamp: Long) {
+        prefs.edit().putLong(KEY_UNINSTALL_UNLOCKED_UNTIL, timestamp).apply()
+        _uninstallUnlockedUntil.value = timestamp
+    }
+
+    fun isUninstallUnlocked(): Boolean = System.currentTimeMillis() < _uninstallUnlockedUntil.value
+
     init {
         // Ensure initial defaults include preset words if empty or first run
         if (!prefs.contains(KEY_BLOCKED_WORDS)) {
@@ -370,6 +416,11 @@ class PreferencesManager(context: Context) {
         private const val KEY_PROTECT_PRIVATE_DNS = "key_protect_private_dns"
         private const val KEY_PAUSE_UNTIL = "key_pause_until"
         private const val KEY_DEVICE_ID = "key_device_id"
+        private const val KEY_PARENT_ID = "key_parent_id"
+        private const val KEY_PARENT_NAME = "key_parent_name"
+        private const val KEY_PAIRED_CHILD_ID = "key_paired_child_id"
+        private const val KEY_FREE_TIME_UNTIL = "key_free_time_until"
+        private const val KEY_UNINSTALL_UNLOCKED_UNTIL = "key_uninstall_unlocked_until"
 
         @Volatile
         private var instance: PreferencesManager? = null

@@ -1,0 +1,177 @@
+package com.example.screenguard.network
+
+import android.os.Build
+import android.util.Log
+import com.google.firebase.database.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.util.UUID
+
+object PairingManager {
+    private const val TAG = "ScreenGuardPairing"
+    private val scope = CoroutineScope(Dispatchers.IO)
+
+    data class PairingSession(
+        val code: String,
+        val parentId: String,
+        val parentName: String,
+        val status: String, // "WAITING" | "PAIRED" | "EXPIRED"
+        val createdAt: Long,
+        val expiresAt: Long,
+        val childDeviceId: String? = null,
+        val childModel: String? = null
+    )
+
+    /**
+     * Called by Parent App:
+     * Generates a 6-digit random code (e.g. 748-291) and writes it to Firebase.
+     * Listens for the child device to submit the matching code.
+     */
+    fun createPairingCode(
+        parentId: String,
+        parentName: String,
+        onCodeGenerated: (code: String) -> Unit,
+        onChildPaired: (childDeviceId: String, childModel: String) -> Unit,
+        onError: (message: String) -> Unit
+    ): ValueEventListener? {
+        val rawCode = (100000..999999).random().toString()
+        val now = System.currentTimeMillis()
+        val expiresAt = now + (15 * 60 * 1000) // 15 minutes validity
+
+        val db = FirebaseDatabase.getInstance()
+        val pairingRef = db.getReference("pairings").child(rawCode)
+
+        val sessionData = mapOf(
+            "code" to rawCode,
+            "parentId" to parentId,
+            "parentName" to parentName,
+            "status" to "WAITING",
+            "createdAt" to now,
+            "expiresAt" to expiresAt
+        )
+
+        pairingRef.setValue(sessionData)
+            .addOnSuccessListener {
+                onCodeGenerated(rawCode)
+            }
+            .addOnFailureListener { err ->
+                onError("Failed to create pairing session: ${err.message}")
+            }
+
+        // Real-time listener waiting for child to link
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val status = snapshot.child("status").getValue(String::class.java) ?: "WAITING"
+                if (status == "PAIRED") {
+                    val childDeviceId = snapshot.child("childDeviceId").getValue(String::class.java) ?: ""
+                    val childModel = snapshot.child("childModel").getValue(String::class.java) ?: "Android Device"
+                    if (childDeviceId.isNotEmpty()) {
+                        onChildPaired(childDeviceId, childModel)
+                        pairingRef.removeEventListener(this)
+                    }
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.w(TAG, "Pairing listener cancelled: ${error.message}")
+            }
+        }
+
+        pairingRef.addValueEventListener(listener)
+        return listener
+    }
+
+    /**
+     * Called by Child App:
+     * Validates the 6-digit code entered by user. If valid and not expired,
+     * updates the session to PAIRED and links the device.
+     */
+    fun linkChildWithCode(
+        inputCode: String,
+        childDeviceId: String,
+        childModel: String,
+        onSuccess: (parentId: String, parentName: String) -> Unit,
+        onError: (errorMessage: String) -> Unit
+    ) {
+        val cleanCode = inputCode.replace("-", "").trim()
+        if (cleanCode.length != 6) {
+            onError("Code must be 6 digits")
+            return
+        }
+
+        val db = FirebaseDatabase.getInstance()
+        val pairingRef = db.getReference("pairings").child(cleanCode)
+
+        pairingRef.addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists()) {
+                    onError("Invalid pairing code. Please check and try again.")
+                    return
+                }
+
+                val expiresAt = snapshot.child("expiresAt").getValue(Long::class.java) ?: 0L
+                val status = snapshot.child("status").getValue(String::class.java) ?: ""
+
+                if (System.currentTimeMillis() > expiresAt || status == "EXPIRED") {
+                    onError("Pairing code has expired. Please generate a new code on the Parent device.")
+                    return
+                }
+
+                if (status == "PAIRED") {
+                    onError("This code has already been used.")
+                    return
+                }
+
+                val parentId = snapshot.child("parentId").getValue(String::class.java) ?: ""
+                val parentName = snapshot.child("parentName").getValue(String::class.java) ?: "Parent"
+
+                if (parentId.isEmpty()) {
+                    onError("Corrupted pairing session.")
+                    return
+                }
+
+                // Mark session as PAIRED
+                val updates = mapOf(
+                    "status" to "PAIRED",
+                    "childDeviceId" to childDeviceId,
+                    "childModel" to childModel,
+                    "pairedAt" to System.currentTimeMillis()
+                )
+
+                pairingRef.updateChildren(updates)
+                    .addOnSuccessListener {
+                        // Register child under family channel
+                        val familyRef = db.getReference("families").child(parentId).child(childDeviceId)
+                        familyRef.child("info").setValue(
+                            mapOf(
+                                "childDeviceId" to childDeviceId,
+                                "childModel" to childModel,
+                                "pairedAt" to System.currentTimeMillis(),
+                                "lastActive" to System.currentTimeMillis(),
+                                "status" to "ACTIVE"
+                            )
+                        )
+                        // Initialize permanent rules
+                        familyRef.child("rules").setValue(
+                            mapOf(
+                                "blockIncognito" to true,
+                                "familyDns" to true,
+                                "freeTimeUntil" to 0L,
+                                "uninstallUnlockedUntil" to 0L
+                            )
+                        )
+
+                        onSuccess(parentId, parentName)
+                    }
+                    .addOnFailureListener { err ->
+                        onError("Failed to complete pairing: ${err.message}")
+                    }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                onError("Database error: ${error.message}")
+            }
+        })
+    }
+}

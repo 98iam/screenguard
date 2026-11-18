@@ -9,11 +9,24 @@ android {
     namespace = "com.example.screenguard"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.screenguard"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "2.0"
+    }
+
+    flavorDimensions += "role"
+    productFlavors {
+        create("child") {
+            dimension = "role"
+            applicationId = "com.example.screenguard.child"
+            versionNameSuffix = "-child"
+        }
+        create("parent") {
+            dimension = "role"
+            applicationId = "com.example.screenguard.parent"
+            versionNameSuffix = "-parent"
+        }
     }
 
     buildTypes {

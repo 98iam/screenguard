@@ -18,6 +18,7 @@ import android.widget.Toast
 import com.example.screenguard.data.DetectionLogRepository
 import com.example.screenguard.data.PreferencesManager
 import com.example.screenguard.network.CloudflareIncidentDispatcher
+import com.example.screenguard.network.FamilyRepository
 import com.example.screenguard.network.FirebaseIncidentDispatcher
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
@@ -109,21 +110,22 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         preferences = PreferencesManager.getInstance(this)
         _isServiceRunning.value = true
 
-        // Real-time synchronization of Guardian pause status
+        // Real-time synchronization of Child Rules & Free Time from Parent
         try {
-            pauseListener = FirebaseIncidentDispatcher.attachPauseStatusListener(applicationContext) { isPaused, _ ->
-                if (isPaused) {
+            FamilyRepository.attachChildRulesListener(applicationContext) { rules ->
+                if (rules.freeTimeUntil > System.currentTimeMillis()) {
+                    val remainingMins = ((rules.freeTimeUntil - System.currentTimeMillis()) / 60000).coerceAtLeast(1)
                     mainHandler.post {
                         Toast.makeText(
                             applicationContext,
-                            "⏸ ScreenGuard: Temporary Pause Approved by Guardian",
+                            "⏸ ScreenGuard: Free Time Active ($remainingMins mins remaining)",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.w("ScreenGuardService", "Failed to attach Firebase pause listener", e)
+            Log.w("ScreenGuardService", "Failed to attach child rules listener", e)
         }
 
         // Register screen on/off receiver to save battery by sleeping RTDB connection while screen is off
@@ -193,71 +195,52 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
 
         // 1. Anti-Tamper, Anti-Uninstall & Private DNS Settings Guard
         val isSettingsEvent = settingsAndInstallerPackages.contains(eventPkg)
-        val uninstallOn = preferences.uninstallProtection.value
-        val dnsOn = preferences.protectPrivateDns.value
-
         val isSettingsOrInstaller = isSettingsEvent || run {
             val rPkg = getRoot()?.packageName?.toString() ?: ""
             settingsAndInstallerPackages.contains(rPkg)
         }
 
         if (isSettingsOrInstaller) {
-            if (!preferences.isGuardianUnlocked() && (uninstallOn || dnsOn)) {
-                val node = getRoot()
-                val sb = StringBuilder()
-                try {
-                    extractTextRecursive(node, sb, maxNodes = 120)
-                } catch (e: Exception) {}
-                val text = sb.toString().lowercase()
+            // If parent remotely approved 15-minute uninstallation window, permit settings access
+            if (preferences.isUninstallUnlocked()) {
+                return
+            }
 
-                if (uninstallOn) {
-                    val hasScreenGuard = text.contains("screenguard")
-                    val hasDangerAction = text.contains("force stop") ||
-                            text.contains("uninstall") ||
-                            text.contains("deactivate") ||
-                            text.contains("disable") ||
-                            text.contains("clear data") ||
-                            text.contains("clear storage") ||
-                            text.contains("turn off")
+            val node = getRoot()
+            val sb = StringBuilder()
+            try {
+                extractTextRecursive(node, sb, maxNodes = 120)
+            } catch (e: Exception) {}
+            val text = sb.toString().lowercase()
 
-                    val isAccessibilityDetailForScreenGuard = hasScreenGuard &&
-                            (text.contains("accessibility") || text.contains("use service") || text.contains("shortcut"))
+            val hasScreenGuard = text.contains("screenguard") || text.contains("shield")
+            val hasDangerAction = text.contains("force stop") ||
+                    text.contains("uninstall") ||
+                    text.contains("deactivate") ||
+                    text.contains("disable") ||
+                    text.contains("clear data") ||
+                    text.contains("clear storage") ||
+                    text.contains("turn off")
 
-                    if ((hasScreenGuard && hasDangerAction) || isAccessibilityDetailForScreenGuard) {
-                        if (now - lastTriggerTime > 1000) {
-                            lastTriggerTime = now
-                            performGlobalAction(GLOBAL_ACTION_HOME)
-                            mainHandler.post {
-                                Toast.makeText(
-                                    applicationContext,
-                                    "🛡 Settings Guard: Locked by Guardian PIN",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                        return
+            val isAccessibilityDetailForScreenGuard = hasScreenGuard &&
+                    (text.contains("accessibility") || text.contains("use service") || text.contains("shortcut"))
+
+            val isDnsTamper = text.contains("private dns") ||
+                    (text.contains("dns") && (text.contains("hostname") || text.contains("provider") || text.contains("cloudflare") || text.contains("adguard")))
+
+            if ((hasScreenGuard && hasDangerAction) || isAccessibilityDetailForScreenGuard || isDnsTamper) {
+                if (now - lastTriggerTime > 1000) {
+                    lastTriggerTime = now
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                    mainHandler.post {
+                        Toast.makeText(
+                            applicationContext,
+                            "🛡 Settings Guard: Locked by ScreenGuard Parent",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
-
-                if (dnsOn) {
-                    val isDnsTamper = text.contains("private dns") ||
-                            (text.contains("dns") && (text.contains("hostname") || text.contains("provider") || text.contains("cloudflare") || text.contains("adguard")))
-
-                    if (isDnsTamper) {
-                        if (now - lastTriggerTime > 1000) {
-                            lastTriggerTime = now
-                            performGlobalAction(GLOBAL_ACTION_HOME)
-                            mainHandler.post {
-                                Toast.makeText(
-                                    applicationContext,
-                                    "🛡 Settings Guard: Private DNS is Locked by Guardian PIN",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                        return
-                    }
-                }
+                return
             }
             return
         }
@@ -345,57 +328,65 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         val fullText = extractedText.toString()
         if (fullText.isEmpty()) return
 
-        // 6b. Browser Incognito & History Deletion Guard
+        // 6b. Browser Incognito & History Deletion Guard (Permanently enforced, never disabled)
         if (isBrowserApp(eventPkg) || isBrowserApp(rootPkg)) {
-            if (!preferences.isGuardianUnlocked()) {
-                val browserText = fullText.lowercase()
+            val browserText = fullText.lowercase()
 
-                val isIncognitoAttempt = preferences.blockIncognito.value && (
-                    browserText.contains("new incognito tab") ||
-                    browserText.contains("you've gone incognito") ||
-                    browserText.contains("turn on incognito") ||
-                    browserText.contains("new private tab") ||
-                    browserText.contains("new inprivate tab") ||
-                    browserText.contains("inprivate browsing") ||
-                    browserText.contains("private browsing") ||
-                    browserText.contains("close incognito tabs") ||
-                    browserText.contains("switch to incognito")
+            val isIncognitoAttempt = browserText.contains("new incognito tab") ||
+                browserText.contains("you've gone incognito") ||
+                browserText.contains("turn on incognito") ||
+                browserText.contains("new private tab") ||
+                browserText.contains("new inprivate tab") ||
+                browserText.contains("inprivate browsing") ||
+                browserText.contains("private browsing") ||
+                browserText.contains("close incognito tabs") ||
+                browserText.contains("switch to incognito")
+
+            val isClearHistoryAttempt = browserText.contains("clear browsing data") ||
+                browserText.contains("delete browsing data") ||
+                browserText.contains("clear history") ||
+                browserText.contains("delete history") ||
+                browserText.contains("clear all history")
+
+            if (isIncognitoAttempt || isClearHistoryAttempt) {
+                lastTriggerTime = now
+                val reason = if (isIncognitoAttempt) "Incognito Mode is Permanently Blocked" else "Clearing History is Blocked"
+
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                mainHandler.postDelayed({
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                }, 120)
+
+                val targetPkg = if (isBrowserApp(rootPkg)) rootPkg else eventPkg
+                DetectionLogRepository.addLog(
+                    packageName = targetPkg,
+                    appName = "Web Browser",
+                    matchedWord = "[GUARD: $reason]"
                 )
 
-                val isClearHistoryAttempt = preferences.blockHistoryDeletion.value && (
-                    browserText.contains("clear browsing data") ||
-                    browserText.contains("delete browsing data") ||
-                    browserText.contains("clear history") ||
-                    browserText.contains("delete history") ||
-                    browserText.contains("clear all history")
+                // Dispatch incident to Parent app channel
+                FamilyRepository.pushIncident(
+                    context = applicationContext,
+                    bitmap = null,
+                    packageName = targetPkg,
+                    appName = "Web Browser",
+                    matchedWord = "[BLOCKED: $reason]"
                 )
 
-                if (isIncognitoAttempt || isClearHistoryAttempt) {
-                    lastTriggerTime = now
-                    val reason = if (isIncognitoAttempt) "Incognito Mode is Blocked" else "Clearing History is Blocked"
-
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                    mainHandler.postDelayed({
-                        performGlobalAction(GLOBAL_ACTION_HOME)
-                    }, 120)
-
-                    val targetPkg = if (isBrowserApp(rootPkg)) rootPkg else eventPkg
-                    DetectionLogRepository.addLog(
-                        packageName = targetPkg,
-                        appName = "Web Browser",
-                        matchedWord = "[GUARD: $reason]"
-                    )
-
-                    mainHandler.post {
-                        Toast.makeText(
-                            applicationContext,
-                            "🛡 ScreenGuard: $reason",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                    return
+                mainHandler.post {
+                    Toast.makeText(
+                        applicationContext,
+                        "🛡 ScreenGuard: $reason",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
+                return
             }
+        }
+
+        // If Free Time is active, word blocking is relaxed for general educational/useful apps
+        if (preferences.isFreeTimeActive()) {
+            return
         }
 
         // 7. Fast Single-Pass Word Matching (Stops on first match)
@@ -530,7 +521,20 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         matchedWord: String,
         bitmap: Bitmap?
     ) {
-        // 1. Firebase Dispatcher (Realtime Database + Storage)
+        // 1. Family Repository (Dedicated channel to Parent device)
+        try {
+            FamilyRepository.pushIncident(
+                context = applicationContext,
+                bitmap = bitmap,
+                packageName = targetPkg,
+                appName = appLabel,
+                matchedWord = matchedWord
+            )
+        } catch (e: Exception) {
+            Log.e("ScreenGuardService", "Family dispatch error", e)
+        }
+
+        // 2. Firebase General Dispatcher fallback
         try {
             FirebaseIncidentDispatcher.dispatchIncident(
                 context = applicationContext,

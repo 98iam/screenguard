@@ -7,55 +7,10 @@
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:windowSoftInputMode="adjustResize"
         android:theme="@style/Theme.ScreenGuard">
-        
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
-        <!-- Guardian Admin Dashboard Activity (Protected, Internal Only) -->
-        <activity
-            android:name=".GuardianActivity"
-            android:label="ScreenGuard Guardian"
-            android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
-
-        <!-- Device Admin Receiver for Anti-Uninstall Protection -->
-        <receiver
-            android:name=".receiver.ScreenGuardDeviceAdminReceiver"
-            android:permission="android.permission.BIND_DEVICE_ADMIN"
-            android:exported="true">
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin_policies" />
-            <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-            </intent-filter>
-        </receiver>
-
-        <!-- ScreenGuard Accessibility Service for Screen Text Monitoring & App Exit -->
-        <service
-            android:name=".service.ScreenGuardAccessibilityService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true"
-            android:label="@string/app_name">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/screenguard_accessibility_service_config" />
-        </service>
-
     </application>
 
 </manifest>

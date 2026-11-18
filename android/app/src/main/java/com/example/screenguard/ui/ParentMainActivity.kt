@@ -1,0 +1,767 @@
+package com.example.screenguard.ui
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Bundle
+import android.util.Base64
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import com.example.screenguard.data.PreferencesManager
+import com.example.screenguard.network.FamilyRepository
+import com.example.screenguard.network.PairingManager
+import com.google.firebase.database.ValueEventListener
+import java.text.SimpleDateFormat
+import java.util.*
+
+class ParentMainActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val prefs = PreferencesManager.getInstance(this)
+
+        setContent {
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = CyberSky,
+                    background = Slate950,
+                    surface = Slate900,
+                    surfaceVariant = Slate800,
+                    onSurface = Color.White
+                )
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Slate950
+                ) {
+                    ParentAppRoot(prefs = prefs)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ParentAppRoot(prefs: PreferencesManager) {
+    var pairedChildId by remember { mutableStateOf(prefs.getPairedChildId()) }
+    var parentId by remember { mutableStateOf(prefs.getParentId().ifEmpty { prefs.getDeviceId() }) }
+
+    if (pairedChildId.isEmpty()) {
+        ParentPairingScreen(
+            parentId = parentId,
+            onPaired = { childId, childModel ->
+                prefs.setParentPairing(parentId, "Guardian Parent")
+                prefs.setPairedChild(childId)
+                pairedChildId = childId
+            }
+        )
+    } else {
+        ParentDashboardScreen(
+            parentId = parentId,
+            childDeviceId = pairedChildId,
+            onUnpair = {
+                prefs.setPairedChild("")
+                pairedChildId = ""
+            }
+        )
+    }
+}
+
+@Composable
+fun ParentPairingScreen(
+    parentId: String,
+    onPaired: (childDeviceId: String, childModel: String) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    var pairingCode by remember { mutableStateOf<String?>(null) }
+    var isGenerating by remember { mutableStateOf(false) }
+    var listenerRef by remember { mutableStateOf<ValueEventListener?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            // Clean up listener if any
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Box(
+            modifier = Modifier
+                .size(76.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(CyberSky.copy(alpha = 0.25f), Slate900)
+                    )
+                )
+                .border(2.dp, CyberSky, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.AdminPanelSettings, contentDescription = "Parent Admin", tint = CyberSky, modifier = Modifier.size(40.dp))
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "ScreenGuard Parent",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Generate a 6-digit code to pair and monitor your child's phone.",
+            fontSize = 13.sp,
+            color = Slate400,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(36.dp))
+
+        if (pairingCode == null) {
+            Button(
+                onClick = {
+                    isGenerating = true
+                    listenerRef = PairingManager.createPairingCode(
+                        parentId = parentId,
+                        parentName = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} (Parent)",
+                        onCodeGenerated = { code ->
+                            isGenerating = false
+                            pairingCode = code
+                        },
+                        onChildPaired = { childId, childModel ->
+                            Toast.makeText(context, "✓ Linked with $childModel!", Toast.LENGTH_LONG).show()
+                            onPaired(childId, childModel)
+                        },
+                        onError = { err ->
+                            isGenerating = false
+                            Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                },
+                enabled = !isGenerating,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = CyberSky)
+            ) {
+                if (isGenerating) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Slate950, strokeWidth = 2.dp)
+                } else {
+                    Text("Generate 6-Digit Pairing Code", color = Slate950, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            }
+        } else {
+            // Display Generated Code
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                shape = RoundedCornerShape(16.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("PAIRING CODE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 2.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val formatted = "${pairingCode?.take(3)} - ${pairingCode?.takeLast(3)}"
+                    Text(
+                        text = formatted,
+                        fontSize = 38.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        letterSpacing = 4.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.clickable {
+                            clipboardManager.setText(AnnotatedString(pairingCode ?: ""))
+                            Toast.makeText(context, "Code copied to clipboard", Toast.LENGTH_SHORT).show()
+                        },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = CyberSky, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Tap to copy", fontSize = 12.sp, color = CyberSky)
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Divider(color = Slate800)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = EmeraldGreen, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Waiting for child device to enter code...",
+                            fontSize = 12.sp,
+                            color = Slate200
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Valid for 15 minutes", fontSize = 11.sp, color = Slate400)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ParentDashboardScreen(
+    parentId: String,
+    childDeviceId: String,
+    onUnpair: () -> Unit
+) {
+    val context = LocalContext.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabs = listOf("Incidents", "Approvals", "Rules & Status")
+
+    var incidents by remember { mutableStateOf<List<FamilyRepository.Incident>>(emptyList()) }
+    var freeTimeRequests by remember { mutableStateOf<List<FamilyRepository.FreeTimeRequest>>(emptyList()) }
+    var uninstallRequests by remember { mutableStateOf<List<FamilyRepository.UninstallRequest>>(emptyList()) }
+    var viewingScreenshot by remember { mutableStateOf<FamilyRepository.Incident?>(null) }
+
+    // Real-time synchronization
+    DisposableEffect(parentId, childDeviceId) {
+        val incListener = FamilyRepository.attachIncidentsListener(parentId, childDeviceId) { list ->
+            incidents = list
+        }
+        val reqListener = FamilyRepository.attachRequestsListener(
+            parentId = parentId,
+            childDeviceId = childDeviceId,
+            onFreeTime = { ftList -> freeTimeRequests = ftList },
+            onUninstall = { uList -> uninstallRequests = uList }
+        )
+
+        onDispose {
+            // Detach listeners if needed
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Top App Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Slate900)
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(EmeraldGreen)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text("Child Device", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text("ID: ${childDeviceId.take(8)}...", fontSize = 11.sp, color = Slate400)
+                }
+            }
+
+            Button(
+                onClick = {
+                    FamilyRepository.grantInstantFreeTime(parentId, childDeviceId, 30)
+                    Toast.makeText(context, "Granted 30 mins free time to child!", Toast.LENGTH_SHORT).show()
+                },
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.HourglassTop, contentDescription = "Break", tint = CyberSky, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Give 30m Break", fontSize = 11.sp, color = Color.White)
+            }
+        }
+
+        // Tab Navigation
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = Slate900,
+            contentColor = CyberSky
+        ) {
+            tabs.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = {
+                        Text(
+                            text = title,
+                            fontSize = 13.sp,
+                            fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selectedTab == index) CyberSky else Slate400
+                        )
+                    }
+                )
+            }
+        }
+
+        // Tab Contents
+        when (selectedTab) {
+            0 -> IncidentsTab(incidents = incidents, onScreenshotClick = { viewingScreenshot = it })
+            1 -> ApprovalsTab(
+                parentId = parentId,
+                childDeviceId = childDeviceId,
+                freeTimeRequests = freeTimeRequests,
+                uninstallRequests = uninstallRequests
+            )
+            2 -> RulesTab(onUnpair = onUnpair)
+        }
+    }
+
+    // Screenshot Lightbox Dialog
+    if (viewingScreenshot != null) {
+        val inc = viewingScreenshot!!
+        Dialog(onDismissRequest = { viewingScreenshot = null }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(inc.appName, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("Matched: '${inc.matchedWord}'", fontSize = 12.sp, color = RoseRed)
+                        }
+                        IconButton(onClick = { viewingScreenshot = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val bitmap = remember(inc) {
+                        inc.screenshotBase64?.let { decodeBase64ToBitmap(it) }
+                    }
+
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Incident Screenshot",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(380.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Fit
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .background(Slate800, RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Screenshot not available", color = Slate400, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun IncidentsTab(
+    incidents: List<FamilyRepository.Incident>,
+    onScreenshotClick: (FamilyRepository.Incident) -> Unit
+) {
+    if (incidents.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.CheckCircle, contentDescription = "Clean", tint = EmeraldGreen, modifier = Modifier.size(48.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("All Clear!", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("No incidents detected on the child device.", fontSize = 13.sp, color = Slate400)
+            }
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(incidents, key = { it.id }) { inc ->
+                IncidentItem(incident = inc, onClick = { onScreenshotClick(inc) })
+            }
+        }
+    }
+}
+
+@Composable
+fun IncidentItem(
+    incident: FamilyRepository.Incident,
+    onClick: () -> Unit
+) {
+    val timeFormatted = remember(incident.timestamp) {
+        val sdf = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+        sdf.format(Date(incident.timestamp))
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(containerColor = Slate900),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(RoseRed.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Warning, contentDescription = "Alert", tint = RoseRed, modifier = Modifier.size(24.dp))
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = incident.appName,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(timeFormatted, fontSize = 11.sp, color = Slate400)
+                }
+
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Triggered: '${incident.matchedWord}'",
+                    fontSize = 12.sp,
+                    color = RoseRed,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            if (incident.screenshotBase64 != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(Icons.Default.PhotoCamera, contentDescription = "Screenshot", tint = CyberSky, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun ApprovalsTab(
+    parentId: String,
+    childDeviceId: String,
+    freeTimeRequests: List<FamilyRepository.FreeTimeRequest>,
+    uninstallRequests: List<FamilyRepository.UninstallRequest>
+) {
+    val context = LocalContext.current
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(16.dp)
+    ) {
+        // Section 1: Free Time Requests
+        Text(
+            text = "FREE TIME / BREAK REQUESTS",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = Slate400,
+            letterSpacing = 1.sp
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        val pendingFreeTime = freeTimeRequests.filter { it.status == "PENDING" }
+        if (pendingFreeTime.isEmpty()) {
+            Text("No pending break requests.", fontSize = 12.sp, color = Slate400)
+        } else {
+            pendingFreeTime.forEach { req ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    colors = CardDefaults.cardColors(containerColor = Slate900),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "${req.durationMinutes} Minutes Break Requested",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Incognito and adult DNS filters will stay strictly active during this break.",
+                            fontSize = 11.sp,
+                            color = Slate400
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    FamilyRepository.approveFreeTime(parentId, childDeviceId, req.id, req.durationMinutes)
+                                    Toast.makeText(context, "Approved ${req.durationMinutes}m break", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Approve", color = Slate950, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    FamilyRepository.rejectFreeTime(parentId, childDeviceId, req.id)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Deny", color = Slate200, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Section 2: Uninstall Requests with 50-Word Friction
+        Text(
+            text = "APP REMOVAL REQUESTS (50-WORD ESSAYS)",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = Slate400,
+            letterSpacing = 1.sp
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        val pendingUninstall = uninstallRequests.filter { it.status == "PENDING" }
+        if (pendingUninstall.isEmpty()) {
+            Text("No pending uninstall requests.", fontSize = 12.sp, color = Slate400)
+        } else {
+            pendingUninstall.forEach { req ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    colors = CardDefaults.cardColors(containerColor = Slate900),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, RoseRed.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Removal Requested", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = RoseRed)
+                            Text("${req.wordCount} words written", fontSize = 11.sp, color = EmeraldGreen, fontWeight = FontWeight.Bold)
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Essay quote box
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Slate950, RoundedCornerShape(8.dp))
+                                .border(1.dp, Slate800, RoundedCornerShape(8.dp))
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = "\"${req.reason}\"",
+                                fontSize = 12.sp,
+                                color = Slate200,
+                                lineHeight = 17.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    FamilyRepository.approveUninstall(parentId, childDeviceId, req.id)
+                                    Toast.makeText(context, "Approved! Child has 15 mins to uninstall.", Toast.LENGTH_LONG).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberOrange),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Allow 15m Window", color = Slate950, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    FamilyRepository.rejectUninstall(parentId, childDeviceId, req.id)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Deny", color = Slate200, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RulesTab(onUnpair: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text("PERMANENT ENFORCEMENT RULES", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Slate400, letterSpacing = 1.sp)
+        Spacer(modifier = Modifier.height(10.dp))
+
+        RuleCard(
+            title = "Incognito Mode",
+            status = "Permanently Blocked",
+            description = "Private & secret tabs are closed immediately across Chrome, Brave, Samsung Internet, Edge, Firefox, and Opera.",
+            tint = EmeraldGreen
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        RuleCard(
+            title = "Family DNS Filter",
+            status = "Permanently Active",
+            description = "Cloudflare 1.1.1.3 adult content filter enforced via local VPN proxy + Private DNS Settings Guard.",
+            tint = EmeraldGreen
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        RuleCard(
+            title = "Anti-Uninstall Guard",
+            status = "50-Word Friction Locked",
+            description = "Device admin blocks drag-to-uninstall. Removal requires writing a 50-word justification and parent approval.",
+            tint = EmeraldGreen
+        )
+
+        Spacer(modifier = Modifier.height(30.dp))
+
+        Button(
+            onClick = onUnpair,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text("Unpair Child Device", color = RoseRed, fontSize = 13.sp)
+        }
+    }
+}
+
+@Composable
+fun RuleCard(
+    title: String,
+    status: String,
+    description: String,
+    tint: Color
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Slate900),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(title, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(status, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = tint)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(description, fontSize = 11.sp, color = Slate400, lineHeight = 16.sp)
+        }
+    }
+}
+
+fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
+    return try {
+        val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
+        BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+    } catch (e: Exception) {
+        null
+    }
+}
