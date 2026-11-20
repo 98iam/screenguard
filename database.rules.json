@@ -1,5 +1,13 @@
 {
   "rules": {
+    "pairings": {
+      ".read": true,
+      ".write": true
+    },
+    "families": {
+      ".read": true,
+      ".write": true
+    },
     "incidents": {
       ".read": true,
       ".write": true

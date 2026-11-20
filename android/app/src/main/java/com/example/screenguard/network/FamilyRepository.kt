@@ -101,7 +101,7 @@ object FamilyRepository {
 
                 val db = FirebaseDatabase.getInstance()
                 val targetRef = if (parentId.isNotEmpty()) {
-                    db.getReference("families").child(parentId).child(childDeviceId).child("incidents").child(incidentId)
+                    db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("incidents").child(incidentId)
                 } else {
                     db.getReference("incidents").child(incidentId)
                 }
@@ -139,7 +139,7 @@ object FamilyRepository {
 
                 // Heartbeat
                 if (parentId.isNotEmpty()) {
-                    db.getReference("families").child(parentId).child(childDeviceId).child("info").child("lastActive").setValue(timestamp)
+                    db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("info").child("lastActive").setValue(timestamp)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in pushIncident", e)
@@ -163,7 +163,7 @@ object FamilyRepository {
 
         val db = FirebaseDatabase.getInstance()
         val reqId = "ft_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(4)}"
-        val reqRef = db.getReference("families").child(parentId).child(childDeviceId).child("requests").child("free_time").child(reqId)
+        val reqRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests").child("free_time").child(reqId)
 
         val data = mapOf(
             "id" to reqId,
@@ -194,7 +194,7 @@ object FamilyRepository {
 
         val db = FirebaseDatabase.getInstance()
         val reqId = "uninst_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(4)}"
-        val reqRef = db.getReference("families").child(parentId).child(childDeviceId).child("requests").child("uninstall").child(reqId)
+        val reqRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests").child("uninstall").child(reqId)
 
         val data = mapOf(
             "id" to reqId,
@@ -220,7 +220,7 @@ object FamilyRepository {
         if (parentId.isEmpty()) return null
 
         val db = FirebaseDatabase.getInstance()
-        val rulesRef = db.getReference("families").child(parentId).child(childDeviceId).child("rules")
+        val rulesRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
 
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
@@ -261,7 +261,7 @@ object FamilyRepository {
         onIncidents: (List<Incident>) -> Unit
     ): ValueEventListener {
         val db = FirebaseDatabase.getInstance()
-        val ref = db.getReference("families").child(parentId).child(childDeviceId).child("incidents")
+        val ref = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("incidents")
 
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
@@ -297,7 +297,7 @@ object FamilyRepository {
         onUninstall: (List<UninstallRequest>) -> Unit
     ): ValueEventListener {
         val db = FirebaseDatabase.getInstance()
-        val ref = db.getReference("families").child(parentId).child(childDeviceId).child("requests")
+        val ref = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests")
 
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
@@ -338,16 +338,16 @@ object FamilyRepository {
         val db = FirebaseDatabase.getInstance()
         val until = System.currentTimeMillis() + (durationMinutes * 60 * 1000)
 
-        db.getReference("families").child(parentId).child(childDeviceId).child("requests").child("free_time").child(requestId)
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests").child("free_time").child(requestId)
             .child("status").setValue("APPROVED")
 
-        db.getReference("families").child(parentId).child(childDeviceId).child("rules")
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
             .child("freeTimeUntil").setValue(until)
     }
 
     fun rejectFreeTime(parentId: String, childDeviceId: String, requestId: String) {
         val db = FirebaseDatabase.getInstance()
-        db.getReference("families").child(parentId).child(childDeviceId).child("requests").child("free_time").child(requestId)
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests").child("free_time").child(requestId)
             .child("status").setValue("DENIED")
     }
 
@@ -355,23 +355,23 @@ object FamilyRepository {
         val db = FirebaseDatabase.getInstance()
         val until = System.currentTimeMillis() + (15 * 60 * 1000) // 15-minute window to uninstall
 
-        db.getReference("families").child(parentId).child(childDeviceId).child("requests").child("uninstall").child(requestId)
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests").child("uninstall").child(requestId)
             .child("status").setValue("APPROVED")
 
-        db.getReference("families").child(parentId).child(childDeviceId).child("rules")
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
             .child("uninstallUnlockedUntil").setValue(until)
     }
 
     fun rejectUninstall(parentId: String, childDeviceId: String, requestId: String) {
         val db = FirebaseDatabase.getInstance()
-        db.getReference("families").child(parentId).child(childDeviceId).child("requests").child("uninstall").child(requestId)
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests").child("uninstall").child(requestId)
             .child("status").setValue("DENIED")
     }
 
     fun grantInstantFreeTime(parentId: String, childDeviceId: String, durationMinutes: Int) {
         val db = FirebaseDatabase.getInstance()
         val until = System.currentTimeMillis() + (durationMinutes * 60 * 1000)
-        db.getReference("families").child(parentId).child(childDeviceId).child("rules")
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
             .child("freeTimeUntil").setValue(until)
     }
 }

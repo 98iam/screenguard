@@ -40,7 +40,7 @@ object PairingManager {
         val expiresAt = now + (15 * 60 * 1000) // 15 minutes validity
 
         val db = FirebaseDatabase.getInstance()
-        val pairingRef = db.getReference("pairings").child(rawCode)
+        val pairingRef = db.getReference("devices").child("pairings").child(rawCode)
 
         val sessionData = mapOf(
             "code" to rawCode,
@@ -101,7 +101,7 @@ object PairingManager {
         }
 
         val db = FirebaseDatabase.getInstance()
-        val pairingRef = db.getReference("pairings").child(cleanCode)
+        val pairingRef = db.getReference("devices").child("pairings").child(cleanCode)
 
         pairingRef.addListenerForSingleValueEvent(object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
@@ -142,7 +142,7 @@ object PairingManager {
                 pairingRef.updateChildren(updates)
                     .addOnSuccessListener {
                         // Register child under family channel
-                        val familyRef = db.getReference("families").child(parentId).child(childDeviceId)
+                        val familyRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId)
                         familyRef.child("info").setValue(
                             mapOf(
                                 "childDeviceId" to childDeviceId,
