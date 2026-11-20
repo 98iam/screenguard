@@ -22,6 +22,13 @@ import com.example.screenguard.network.FamilyRepository
 import com.example.screenguard.network.FirebaseIncidentDispatcher
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,9 +37,15 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
 
     private lateinit var preferences: PreferencesManager
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var lastTriggerTime = 0L
     private var lastTextScanTime = 0L
     private var lastScreenshotTime = 0L
+    private var lastVisionScanTime = 0L
+    @Volatile
+    private var isVisionScanning = false
+    @Volatile
+    private var currentActivePkg: String = ""
     private var pauseListener: ValueEventListener? = null
 
     // Screen state listener to put Firebase RTDB offline during screen off (saves 100% standby radio drain)
@@ -137,6 +150,18 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             registerReceiver(screenStateReceiver, filter)
         } catch (e: Exception) {
             Log.w("ScreenGuardService", "Failed to register screen state receiver", e)
+        }
+
+        // Initialize YOLOv8 NudeNet Vision AI in background & start periodic visual check
+        serviceScope.launch {
+            NudeNetVisionDetector.initialize(applicationContext)
+            while (isActive) {
+                delay(2000L)
+                val pkg = currentActivePkg
+                if (pkg.isNotEmpty() && !isPackageProtected(pkg) && !preferences.isFreeTimeActive() && preferences.isEnabled.value) {
+                    checkScreenForExplicitVision(pkg)
+                }
+            }
         }
     }
 
@@ -394,9 +419,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         val matchMode = preferences.matchMode.value
         val matchedWord = WordDetector.findFirstMatch(fullText, blockedWords, matchMode)
 
+        val targetPkg = if (rootPkg.isNotEmpty() && !isPackageProtected(rootPkg)) rootPkg else eventPkg
+        currentActivePkg = targetPkg
+
         if (matchedWord != null) {
             lastTriggerTime = now
-            val targetPkg = if (rootPkg.isNotEmpty() && !isPackageProtected(rootPkg)) rootPkg else eventPkg
 
             val appLabel = try {
                 val pm = packageManager
@@ -412,6 +439,95 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                 appLabel = appLabel,
                 triggerReason = matchedWord
             )
+        } else {
+            // 8. Vision AI Screen Analysis: Check image content (e.g. bikini, nudity, explicit images)
+            checkScreenForExplicitVision(targetPkg)
+        }
+    }
+
+    /**
+     * Deep Learning Vision AI Analysis (YOLOv8 NudeNet ONNX).
+     * Inspects screen content for bikinis, swimwear, and explicit imagery.
+     */
+    private fun checkScreenForExplicitVision(targetPkg: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        if (preferences.isFreeTimeActive()) return
+        if (isPackageProtected(targetPkg)) return
+        if (isVisionScanning) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastVisionScanTime < 1500L) return
+        lastVisionScanTime = now
+        isVisionScanning = true
+
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(screenshotResult: ScreenshotResult) {
+                    val hwBuffer = screenshotResult.hardwareBuffer
+                    val colorSpace = screenshotResult.colorSpace
+                    var bitmap: Bitmap? = null
+                    try {
+                        val rawBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                        if (rawBitmap != null) {
+                            bitmap = rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ScreenGuardService", "Vision screenshot wrap error", e)
+                    } finally {
+                        hwBuffer.close()
+                    }
+
+                    if (bitmap != null) {
+                        serviceScope.launch {
+                            try {
+                                val detections = NudeNetVisionDetector.detect(bitmap, confThreshold = 0.35f)
+                                if (detections.isNotEmpty()) {
+                                    val topDetection = detections.first()
+                                    val pm = packageManager
+                                    val appLabel = try {
+                                        val appInfo = pm.getApplicationInfo(targetPkg, 0)
+                                        pm.getApplicationLabel(appInfo).toString()
+                                    } catch (e: Exception) {
+                                        targetPkg
+                                    }
+
+                                    mainHandler.post {
+                                        performGlobalAction(GLOBAL_ACTION_HOME)
+                                        Toast.makeText(
+                                            applicationContext,
+                                            "🛡 ScreenGuard AI: Blocked $appLabel (${topDetection.humanReadableName})",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+
+                                    DetectionLogRepository.addLog(
+                                        packageName = targetPkg,
+                                        appName = appLabel,
+                                        matchedWord = "[AI VISION: ${topDetection.humanReadableName}]"
+                                    )
+
+                                    dispatchToBackends(
+                                        targetPkg = targetPkg,
+                                        appLabel = appLabel,
+                                        matchedWord = "[AI VISION: ${topDetection.humanReadableName}]",
+                                        bitmap = bitmap
+                                    )
+                                }
+                            } finally {
+                                isVisionScanning = false
+                            }
+                        }
+                    } else {
+                        isVisionScanning = false
+                    }
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    isVisionScanning = false
+                }
+            })
+        } catch (e: Exception) {
+            isVisionScanning = false
         }
     }
 
@@ -599,6 +715,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         _isServiceRunning.value = false
+        try {
+            serviceScope.cancel()
+        } catch (e: Exception) {
+            // Ignore
+        }
         try {
             unregisterReceiver(screenStateReceiver)
         } catch (e: Exception) {

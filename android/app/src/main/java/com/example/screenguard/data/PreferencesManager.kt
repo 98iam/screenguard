@@ -59,6 +59,9 @@ val PRESET_18PLUS_MANHWA = setOf(
     "nsfw",
     "smut",
     "cookie",
+    "bikini",
+    "swimsuit",
+    "lingerie",
     "TEST_BLOCKED_WORD"
 )
 

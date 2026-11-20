@@ -104,4 +104,7 @@ dependencies {
 
   // Networking for Cloudflare Dispatcher
   implementation(libs.okhttp)
+
+  // ONNX Runtime for YOLOv8 NudeNet Vision AI
+  implementation(libs.onnxruntime.android)
 }
