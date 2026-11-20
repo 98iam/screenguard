@@ -3,6 +3,8 @@ package com.example.screenguard.network
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import com.example.screenguard.data.PreferencesManager
@@ -17,6 +19,7 @@ import java.util.UUID
 object FamilyRepository {
     private const val TAG = "FamilyRepository"
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     data class Incident(
         val id: String = "",
@@ -232,14 +235,13 @@ object FamilyRepository {
                 prefs.setFreeTimeUntil(freeTimeUntil)
                 prefs.setUninstallUnlockedUntil(uninstallUnlockedUntil)
 
-                onUpdate(
-                    ChildRules(
-                        blockIncognito = blockIncognito,
-                        familyDns = familyDns,
-                        freeTimeUntil = freeTimeUntil,
-                        uninstallUnlockedUntil = uninstallUnlockedUntil
-                    )
+                val rules = ChildRules(
+                    blockIncognito = blockIncognito,
+                    familyDns = familyDns,
+                    freeTimeUntil = freeTimeUntil,
+                    uninstallUnlockedUntil = uninstallUnlockedUntil
                 )
+                mainHandler.post { onUpdate(rules) }
             }
 
             override fun onCancelled(error: DatabaseError) {
@@ -278,7 +280,8 @@ object FamilyRepository {
 
                     list.add(Incident(id, devId, pkg, appName, word, base64, url, ts))
                 }
-                onIncidents(list.sortedByDescending { it.timestamp })
+                val sorted = list.sortedByDescending { it.timestamp }
+                mainHandler.post { onIncidents(sorted) }
             }
 
             override fun onCancelled(error: DatabaseError) {
@@ -310,7 +313,7 @@ object FamilyRepository {
                     val status = c.child("status").getValue(String::class.java) ?: "PENDING"
                     ftList.add(FreeTimeRequest(id, duration, reqAt, status))
                 }
-                onFreeTime(ftList.sortedByDescending { it.requestedAt })
+                val sortedFt = ftList.sortedByDescending { it.requestedAt }
 
                 // Uninstall requests
                 val uninstList = mutableListOf<UninstallRequest>()
@@ -322,7 +325,12 @@ object FamilyRepository {
                     val status = c.child("status").getValue(String::class.java) ?: "PENDING"
                     uninstList.add(UninstallRequest(id, reason, wc, reqAt, status))
                 }
-                onUninstall(uninstList.sortedByDescending { it.requestedAt })
+                val sortedUninst = uninstList.sortedByDescending { it.requestedAt }
+
+                mainHandler.post {
+                    onFreeTime(sortedFt)
+                    onUninstall(sortedUninst)
+                }
             }
 
             override fun onCancelled(error: DatabaseError) {

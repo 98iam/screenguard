@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -101,9 +102,27 @@ fun ChildAppRoot(prefs: PreferencesManager) {
     var freeTimeUntil by remember { mutableLongStateOf(prefs.freeTimeUntil.value) }
     var uninstallUnlockedUntil by remember { mutableLongStateOf(prefs.uninstallUnlockedUntil.value) }
 
-    // Listen to real-time rule updates from Parent
+    // VPN launcher held at root level so it is NEVER disposed during screen transitions
+    val vpnLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            FamilyDnsVpnService.start(context)
+        }
+    }
+
+    // Listen to real-time rule updates from Parent and ensure Family DNS VPN is running
     LaunchedEffect(isPaired) {
         if (isPaired) {
+            try {
+                val vpnIntent = VpnService.prepare(context)
+                if (vpnIntent != null) {
+                    vpnLauncher.launch(vpnIntent)
+                } else {
+                    FamilyDnsVpnService.start(context)
+                }
+            } catch (e: Exception) {
+                Log.e("ChildAppRoot", "Error launching VPN", e)
+            }
+
             FamilyRepository.attachChildRulesListener(context) { rules ->
                 freeTimeUntil = rules.freeTimeUntil
                 uninstallUnlockedUntil = rules.uninstallUnlockedUntil
@@ -118,7 +137,6 @@ fun ChildAppRoot(prefs: PreferencesManager) {
                 prefs.setParentPairing(pId, pName)
                 parentName = pName
                 isPaired = true
-                FamilyDnsVpnService.start(context)
             }
         )
     } else {
@@ -153,13 +171,6 @@ fun ChildPairingScreen(
             isAccessibilityOn = isAccessibilityEnabled(context)
             isAdminOn = dpm?.isAdminActive(adminComp) == true
             delay(1500)
-        }
-    }
-
-    // VPN launcher
-    val vpnLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            FamilyDnsVpnService.start(context)
         }
     }
 
@@ -259,13 +270,6 @@ fun ChildPairingScreen(
                     childModel = childModel,
                     onSuccess = { parentId, parentName ->
                         isLoading = false
-                        // Request VPN permission
-                        val vpnIntent = VpnService.prepare(context)
-                        if (vpnIntent != null) {
-                            vpnLauncher.launch(vpnIntent)
-                        } else {
-                            FamilyDnsVpnService.start(context)
-                        }
                         onPairedSuccess(parentId, parentName)
                     },
                     onError = { err ->

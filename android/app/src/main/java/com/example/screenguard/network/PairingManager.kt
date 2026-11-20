@@ -1,6 +1,8 @@
 package com.example.screenguard.network
 
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.google.firebase.database.*
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +13,7 @@ import java.util.UUID
 object PairingManager {
     private const val TAG = "ScreenGuardPairing"
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     data class PairingSession(
         val code: String,
@@ -53,10 +56,10 @@ object PairingManager {
 
         pairingRef.setValue(sessionData)
             .addOnSuccessListener {
-                onCodeGenerated(rawCode)
+                mainHandler.post { onCodeGenerated(rawCode) }
             }
             .addOnFailureListener { err ->
-                onError("Failed to create pairing session: ${err.message}")
+                mainHandler.post { onError("Failed to create pairing session: ${err.message}") }
             }
 
         // Real-time listener waiting for child to link
@@ -67,7 +70,7 @@ object PairingManager {
                     val childDeviceId = snapshot.child("childDeviceId").getValue(String::class.java) ?: ""
                     val childModel = snapshot.child("childModel").getValue(String::class.java) ?: "Android Device"
                     if (childDeviceId.isNotEmpty()) {
-                        onChildPaired(childDeviceId, childModel)
+                        mainHandler.post { onChildPaired(childDeviceId, childModel) }
                         pairingRef.removeEventListener(this)
                     }
                 }
@@ -96,7 +99,7 @@ object PairingManager {
     ) {
         val cleanCode = inputCode.replace("-", "").trim()
         if (cleanCode.length != 6) {
-            onError("Code must be 6 digits")
+            mainHandler.post { onError("Code must be 6 digits") }
             return
         }
 
@@ -106,7 +109,7 @@ object PairingManager {
         pairingRef.addListenerForSingleValueEvent(object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 if (!snapshot.exists()) {
-                    onError("Invalid pairing code. Please check and try again.")
+                    mainHandler.post { onError("Invalid pairing code. Please check and try again.") }
                     return
                 }
 
@@ -114,12 +117,12 @@ object PairingManager {
                 val status = snapshot.child("status").getValue(String::class.java) ?: ""
 
                 if (System.currentTimeMillis() > expiresAt || status == "EXPIRED") {
-                    onError("Pairing code has expired. Please generate a new code on the Parent device.")
+                    mainHandler.post { onError("Pairing code has expired. Please generate a new code on the Parent device.") }
                     return
                 }
 
                 if (status == "PAIRED") {
-                    onError("This code has already been used.")
+                    mainHandler.post { onError("This code has already been used.") }
                     return
                 }
 
@@ -127,7 +130,7 @@ object PairingManager {
                 val parentName = snapshot.child("parentName").getValue(String::class.java) ?: "Parent"
 
                 if (parentId.isEmpty()) {
-                    onError("Corrupted pairing session.")
+                    mainHandler.post { onError("Corrupted pairing session.") }
                     return
                 }
 
@@ -162,15 +165,15 @@ object PairingManager {
                             )
                         )
 
-                        onSuccess(parentId, parentName)
+                        mainHandler.post { onSuccess(parentId, parentName) }
                     }
                     .addOnFailureListener { err ->
-                        onError("Failed to complete pairing: ${err.message}")
+                        mainHandler.post { onError("Failed to complete pairing: ${err.message}") }
                     }
             }
 
             override fun onCancelled(error: DatabaseError) {
-                onError("Database error: ${error.message}")
+                mainHandler.post { onError("Database error: ${error.message}") }
             }
         })
     }
