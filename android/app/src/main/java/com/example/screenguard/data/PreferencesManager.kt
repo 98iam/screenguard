@@ -90,7 +90,7 @@ class PreferencesManager(context: Context) {
     val blockedWords: StateFlow<Set<String>> = _blockedWords.asStateFlow()
 
     private val _whitelist = MutableStateFlow(
-        prefs.getStringSet(KEY_WHITELIST, setOf("com.example.screenguard", "com.android.systemui")) ?: setOf("com.example.screenguard", "com.android.systemui")
+        prefs.getStringSet(KEY_WHITELIST, setOf("com.example.screenguard", "com.example.screenguard.child", "com.example.screenguard.parent", "com.android.systemui")) ?: setOf("com.example.screenguard", "com.example.screenguard.child", "com.example.screenguard.parent", "com.android.systemui")
     )
     val whitelist: StateFlow<Set<String>> = _whitelist.asStateFlow()
 
@@ -166,14 +166,15 @@ class PreferencesManager(context: Context) {
         val current = _guardianPin.value
         if (current.isEmpty()) return true
         val hashed = hashPin(pin)
-        return current == hashed || current == pin
+        return current == hashed
     }
 
+    @Synchronized
     fun getDeviceId(): String {
         var id = prefs.getString(KEY_DEVICE_ID, null)
         if (id.isNullOrBlank()) {
             id = java.util.UUID.randomUUID().toString().substring(0, 8)
-            prefs.edit().putString(KEY_DEVICE_ID, id).apply()
+            prefs.edit().putString(KEY_DEVICE_ID, id).commit()
         }
         return id
     }

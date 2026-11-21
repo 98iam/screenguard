@@ -11,6 +11,15 @@
         android:supportsRtl="true"
         android:windowSoftInputMode="adjustResize"
         android:theme="@style/Theme.ScreenGuard">
+
+        <!-- Declared to prevent ActivityNotFoundException on internal intents -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false" />
+        <activity
+            android:name=".GuardianActivity"
+            android:exported="false" />
+
     </application>
 
 </manifest>

@@ -124,12 +124,15 @@ object FamilyRepository {
 
                 targetRef.setValue(incidentData)
 
+                val isWebp = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                val ext = if (isWebp) "webp" else "jpg"
+
                 // Optional high-res Storage upload
                 if (imageBytes != null) {
                     try {
                         val storageRef = FirebaseStorage.getInstance().reference
                             .child("screenshots")
-                            .child("${incidentId}.webp")
+                            .child("${incidentId}.$ext")
                         storageRef.putBytes(imageBytes).addOnSuccessListener {
                             storageRef.downloadUrl.addOnSuccessListener { uri ->
                                 targetRef.child("screenshotUrl").setValue(uri.toString())

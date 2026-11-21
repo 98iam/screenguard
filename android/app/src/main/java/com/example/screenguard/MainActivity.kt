@@ -252,7 +252,7 @@ fun ScreenGuardApp(preferences: PreferencesManager) {
             when (selectedTab) {
                 0 -> DashboardWordsTab(preferences, blockedWords, detectionLogs.size, blockPlayStore, requireGuardianAuth)
                 1 -> WhitelistTab(preferences, whitelist, requireGuardianAuth)
-                2 -> HistoryTab(detectionLogs)
+                2 -> HistoryTab(detectionLogs, requireGuardianAuth)
                 3 -> SettingsTab(preferences, matchMode, showToast, isAccessibilityEnabled, blockPlayStore, blockedPackages, requireGuardianAuth)
             }
         }
@@ -783,7 +783,10 @@ fun WhitelistTab(
 }
 
 @Composable
-fun HistoryTab(logs: List<DetectionLog>) {
+fun HistoryTab(
+    logs: List<DetectionLog>,
+    requireGuardianAuth: (() -> Unit) -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -804,7 +807,7 @@ fun HistoryTab(logs: List<DetectionLog>) {
             )
 
             if (logs.isNotEmpty()) {
-                TextButton(onClick = { DetectionLogRepository.clearLogs() }) {
+                TextButton(onClick = { requireGuardianAuth { DetectionLogRepository.clearLogs() } }) {
                     Text("Clear All", color = RoseRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
@@ -1754,8 +1757,8 @@ fun SettingsTab(
                     onClick = {
                         val pin = newPinText.trim()
                         val confirm = confirmPinText.trim()
-                        if (pin.length < 4 || pin.length > 8) {
-                            pinDialogError = "PIN must be between 4 and 8 digits"
+                        if (pin.length !in 4..6 || !pin.all { it.isDigit() }) {
+                            pinDialogError = "PIN must be between 4 and 6 digits"
                         } else if (pin != confirm) {
                             pinDialogError = "PINs do not match"
                         } else {

@@ -106,74 +106,80 @@ object PairingManager {
         val db = FirebaseDatabase.getInstance()
         val pairingRef = db.getReference("devices").child("pairings").child(cleanCode)
 
-        pairingRef.addListenerForSingleValueEvent(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                if (!snapshot.exists()) {
-                    mainHandler.post { onError("Invalid pairing code. Please check and try again.") }
-                    return
+        pairingRef.runTransaction(object : Transaction.Handler {
+            var parentId = ""
+            var parentName = ""
+            var abortMessage = ""
+
+            override fun doTransaction(currentData: MutableData): Transaction.Result {
+                val value = currentData.value as? Map<*, *>
+                if (value == null) {
+                    abortMessage = "Invalid pairing code. Please check and try again."
+                    return Transaction.abort()
                 }
 
-                val expiresAt = snapshot.child("expiresAt").getValue(Long::class.java) ?: 0L
-                val status = snapshot.child("status").getValue(String::class.java) ?: ""
+                val status = value["status"] as? String ?: ""
+                val expiresAt = (value["expiresAt"] as? Number)?.toLong() ?: 0L
 
                 if (System.currentTimeMillis() > expiresAt || status == "EXPIRED") {
-                    mainHandler.post { onError("Pairing code has expired. Please generate a new code on the Parent device.") }
-                    return
+                    abortMessage = "Pairing code has expired. Please generate a new code on the Parent device."
+                    return Transaction.abort()
                 }
 
                 if (status == "PAIRED") {
-                    mainHandler.post { onError("This code has already been used.") }
-                    return
+                    abortMessage = "This code has already been used."
+                    return Transaction.abort()
                 }
 
-                val parentId = snapshot.child("parentId").getValue(String::class.java) ?: ""
-                val parentName = snapshot.child("parentName").getValue(String::class.java) ?: "Parent"
+                parentId = value["parentId"] as? String ?: ""
+                parentName = value["parentName"] as? String ?: "Parent"
 
                 if (parentId.isEmpty()) {
-                    mainHandler.post { onError("Corrupted pairing session.") }
+                    abortMessage = "Corrupted pairing session."
+                    return Transaction.abort()
+                }
+
+                currentData.child("status").value = "PAIRED"
+                currentData.child("childDeviceId").value = childDeviceId
+                currentData.child("childModel").value = childModel
+                currentData.child("pairedAt").value = System.currentTimeMillis()
+
+                return Transaction.success(currentData)
+            }
+
+            override fun onComplete(error: DatabaseError?, committed: Boolean, currentData: DataSnapshot?) {
+                if (error != null) {
+                    mainHandler.post { onError("Database error: ${error.message}") }
                     return
                 }
 
-                // Mark session as PAIRED
-                val updates = mapOf(
-                    "status" to "PAIRED",
-                    "childDeviceId" to childDeviceId,
-                    "childModel" to childModel,
-                    "pairedAt" to System.currentTimeMillis()
+                if (!committed) {
+                    mainHandler.post { onError(abortMessage.ifEmpty { "Failed to pair device." }) }
+                    return
+                }
+
+                // Register child under family channel atomically
+                val familyRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId)
+                familyRef.child("info").setValue(
+                    mapOf(
+                        "childDeviceId" to childDeviceId,
+                        "childModel" to childModel,
+                        "pairedAt" to System.currentTimeMillis(),
+                        "lastActive" to System.currentTimeMillis(),
+                        "status" to "ACTIVE"
+                    )
+                )
+                // Initialize permanent rules
+                familyRef.child("rules").setValue(
+                    mapOf(
+                        "blockIncognito" to true,
+                        "familyDns" to true,
+                        "freeTimeUntil" to 0L,
+                        "uninstallUnlockedUntil" to 0L
+                    )
                 )
 
-                pairingRef.updateChildren(updates)
-                    .addOnSuccessListener {
-                        // Register child under family channel
-                        val familyRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId)
-                        familyRef.child("info").setValue(
-                            mapOf(
-                                "childDeviceId" to childDeviceId,
-                                "childModel" to childModel,
-                                "pairedAt" to System.currentTimeMillis(),
-                                "lastActive" to System.currentTimeMillis(),
-                                "status" to "ACTIVE"
-                            )
-                        )
-                        // Initialize permanent rules
-                        familyRef.child("rules").setValue(
-                            mapOf(
-                                "blockIncognito" to true,
-                                "familyDns" to true,
-                                "freeTimeUntil" to 0L,
-                                "uninstallUnlockedUntil" to 0L
-                            )
-                        )
-
-                        mainHandler.post { onSuccess(parentId, parentName) }
-                    }
-                    .addOnFailureListener { err ->
-                        mainHandler.post { onError("Failed to complete pairing: ${err.message}") }
-                    }
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                mainHandler.post { onError("Database error: ${error.message}") }
+                mainHandler.post { onSuccess(parentId, parentName) }
             }
         })
     }

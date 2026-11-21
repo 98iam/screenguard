@@ -122,10 +122,26 @@ fun ChildAppRoot(prefs: PreferencesManager) {
             } catch (e: Exception) {
                 Log.e("ChildAppRoot", "Error launching VPN", e)
             }
+        }
+    }
 
-            FamilyRepository.attachChildRulesListener(context) { rules ->
+    DisposableEffect(isPaired) {
+        var rulesListener: com.google.firebase.database.ValueEventListener? = null
+        if (isPaired) {
+            rulesListener = FamilyRepository.attachChildRulesListener(context) { rules ->
                 freeTimeUntil = rules.freeTimeUntil
                 uninstallUnlockedUntil = rules.uninstallUnlockedUntil
+            }
+        }
+        onDispose {
+            rulesListener?.let { l ->
+                val pId = prefs.getParentId()
+                val cId = prefs.getDeviceId()
+                if (pId.isNotEmpty()) {
+                    com.google.firebase.database.FirebaseDatabase.getInstance()
+                        .getReference("devices").child("families").child(pId).child(cId).child("rules")
+                        .removeEventListener(l)
+                }
             }
         }
     }
@@ -350,8 +366,16 @@ fun ChildProtectedHubScreen(
     var isSubmittingUninstall by remember { mutableStateOf(false) }
     var uninstallRequestStatus by remember { mutableStateOf<String?>(null) }
 
-    val isFreeTimeActive = System.currentTimeMillis() < freeTimeUntil
-    val isUninstallUnlocked = System.currentTimeMillis() < uninstallUnlockedUntil
+    var currentClock by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000L)
+            currentClock = System.currentTimeMillis()
+        }
+    }
+
+    val isFreeTimeActive = currentClock < freeTimeUntil
+    val isUninstallUnlocked = currentClock < uninstallUnlockedUntil
 
     val wordCount = remember(uninstallReason) {
         uninstallReason.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }.size
@@ -421,7 +445,7 @@ fun ChildProtectedHubScreen(
                 }
 
                 if (isFreeTimeActive) {
-                    val remainingMins = ((freeTimeUntil - System.currentTimeMillis()) / 60000).coerceAtLeast(1)
+                    val remainingMins = ((freeTimeUntil - currentClock) / 60000).coerceAtLeast(1)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "⏳ $remainingMins minutes remaining in your approved break.",
@@ -563,7 +587,7 @@ fun ChildProtectedHubScreen(
                 }
 
                 if (isUninstallUnlocked) {
-                    val remainingMins = ((uninstallUnlockedUntil - System.currentTimeMillis()) / 60000).coerceAtLeast(1)
+                    val remainingMins = ((uninstallUnlockedUntil - currentClock) / 60000).coerceAtLeast(1)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "⚠️ Uninstallation Approved by Parent! You have $remainingMins minutes to deactivate Device Admin and uninstall ScreenGuard.",

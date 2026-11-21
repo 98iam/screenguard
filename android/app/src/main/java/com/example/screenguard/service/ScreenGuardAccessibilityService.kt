@@ -47,6 +47,7 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
     @Volatile
     private var currentActivePkg: String = ""
     private var pauseListener: ValueEventListener? = null
+    private var childRulesListener: ValueEventListener? = null
 
     // Screen state listener to put Firebase RTDB offline during screen off (saves 100% standby radio drain)
     private val screenStateReceiver = object : BroadcastReceiver() {
@@ -125,7 +126,7 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
 
         // Real-time synchronization of Child Rules & Free Time from Parent
         try {
-            FamilyRepository.attachChildRulesListener(applicationContext) { rules ->
+            childRulesListener = FamilyRepository.attachChildRulesListener(applicationContext) { rules ->
                 if (rules.freeTimeUntil > System.currentTimeMillis()) {
                     val remainingMins = ((rules.freeTimeUntil - System.currentTimeMillis()) / 60000).coerceAtLeast(1)
                     mainHandler.post {
@@ -202,11 +203,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             preferences = PreferencesManager.getInstance(this)
         }
 
-        // Check if guardian granted a temporary pause
-        if (preferences.isAppPaused()) return
-
         val eventPkg = event.packageName?.toString() ?: ""
         val now = System.currentTimeMillis()
+
+        // Always track active non-protected foreground package immediately
+        currentActivePkg = if (isPackageProtected(eventPkg)) "" else eventPkg
 
         var rootNode: AccessibilityNodeInfo? = null
         var rootNodeFetched = false
@@ -218,11 +219,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             return rootNode
         }
 
-        // 1. Anti-Tamper, Anti-Uninstall & Private DNS Settings Guard
-        val isSettingsEvent = settingsAndInstallerPackages.contains(eventPkg)
+        // 1. Anti-Tamper, Anti-Uninstall & Private DNS Settings Guard (Permanently enforced, checked before pause)
+        val isSettingsEvent = settingsAndInstallerPackages.any { it.equals(eventPkg, ignoreCase = true) }
         val isSettingsOrInstaller = isSettingsEvent || run {
             val rPkg = getRoot()?.packageName?.toString() ?: ""
-            settingsAndInstallerPackages.contains(rPkg)
+            settingsAndInstallerPackages.any { it.equals(rPkg, ignoreCase = true) }
         }
 
         if (isSettingsOrInstaller) {
@@ -253,7 +254,12 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             val isDnsTamper = text.contains("private dns") ||
                     (text.contains("dns") && (text.contains("hostname") || text.contains("provider") || text.contains("cloudflare") || text.contains("adguard")))
 
-            if ((hasScreenGuard && hasDangerAction) || isAccessibilityDetailForScreenGuard || isDnsTamper) {
+            val checkUninstall = preferences.uninstallProtection.value
+            val checkDns = preferences.protectPrivateDns.value
+            val isTamperTriggered = (checkUninstall && ((hasScreenGuard && hasDangerAction) || isAccessibilityDetailForScreenGuard)) ||
+                    (checkDns && isDnsTamper)
+
+            if (isTamperTriggered) {
                 if (now - lastTriggerTime > 1000) {
                     lastTriggerTime = now
                     performGlobalAction(GLOBAL_ACTION_HOME)
@@ -373,7 +379,11 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                 browserText.contains("delete history") ||
                 browserText.contains("clear all history")
 
-            if (isIncognitoAttempt || isClearHistoryAttempt) {
+            val checkIncognito = preferences.blockIncognito.value
+            val checkHistory = preferences.blockHistoryDeletion.value
+            val isBlocked = (isIncognitoAttempt && checkIncognito) || (isClearHistoryAttempt && checkHistory)
+
+            if (isBlocked) {
                 lastTriggerTime = now
                 val reason = if (isIncognitoAttempt) "Incognito Mode is Permanently Blocked" else "Clearing History is Blocked"
 
@@ -409,8 +419,8 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
             }
         }
 
-        // If Free Time is active, word blocking is relaxed for general educational/useful apps
-        if (preferences.isFreeTimeActive()) {
+        // If Free Time or pause is active, word blocking is relaxed for general educational/useful apps
+        if (preferences.isAppPaused() || preferences.isFreeTimeActive()) {
             return
         }
 
@@ -460,16 +470,20 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         lastVisionScanTime = now
         isVisionScanning = true
 
+        val timeoutRunnable = Runnable { isVisionScanning = false }
+        mainHandler.postDelayed(timeoutRunnable, 5000L)
+
         try {
             takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor, object : TakeScreenshotCallback {
                 override fun onSuccess(screenshotResult: ScreenshotResult) {
+                    mainHandler.removeCallbacks(timeoutRunnable)
                     val hwBuffer = screenshotResult.hardwareBuffer
                     val colorSpace = screenshotResult.colorSpace
                     var bitmap: Bitmap? = null
                     try {
                         val rawBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
                         if (rawBitmap != null) {
-                            bitmap = rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                            bitmap = Bitmap.createScaledBitmap(rawBitmap, 320, 320, true)
                         }
                     } catch (e: Exception) {
                         Log.e("ScreenGuardService", "Vision screenshot wrap error", e)
@@ -523,10 +537,12 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                 }
 
                 override fun onFailure(errorCode: Int) {
+                    mainHandler.removeCallbacks(timeoutRunnable)
                     isVisionScanning = false
                 }
             })
         } catch (e: Exception) {
+            mainHandler.removeCallbacks(timeoutRunnable)
             isVisionScanning = false
         }
     }
@@ -717,6 +733,15 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         _isServiceRunning.value = false
         try {
             serviceScope.cancel()
+        } catch (e: Exception) {
+            // Ignore
+        }
+        try {
+            val pId = preferences.getParentId()
+            val cId = preferences.getDeviceId()
+            if (pId.isNotEmpty() && childRulesListener != null) {
+                FirebaseDatabase.getInstance().getReference("devices").child("families").child(pId).child(cId).child("rules").removeEventListener(childRulesListener!!)
+            }
         } catch (e: Exception) {
             // Ignore
         }

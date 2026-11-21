@@ -108,8 +108,7 @@ class GuardianActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun GuardianScreen(prefs: PreferencesManager) {
-        val serverUrlState = prefs.cloudflareEndpoint.collectAsState()
-        var serverUrl by remember { mutableStateOf(serverUrlState.value) }
+        val serverUrl by prefs.cloudflareEndpoint.collectAsState()
         var showSettingsDialog by remember { mutableStateOf(false) }
         var selectedTab by remember { mutableIntStateOf(0) }
         var isRefreshing by remember { mutableStateOf(false) }
@@ -166,7 +165,8 @@ class GuardianActivity : ComponentActivity() {
                         Log.e("GuardianActivity", "Incidents listener error: ${error.message}")
                     }
                 }
-                incidentsRef.limitToLast(50).addValueEventListener(incidentsListener)
+                val incidentsQuery = incidentsRef.limitToLast(50)
+                incidentsQuery.addValueEventListener(incidentsListener)
 
                 // Real-time Pause Requests listener
                 val requestsRef = db.getReference("pause_requests")
@@ -199,11 +199,12 @@ class GuardianActivity : ComponentActivity() {
                         Log.e("GuardianActivity", "Pause requests listener error: ${error.message}")
                     }
                 }
-                requestsRef.limitToLast(20).addValueEventListener(requestsListener)
+                val requestsQuery = requestsRef.limitToLast(20)
+                requestsQuery.addValueEventListener(requestsListener)
 
                 onDispose {
-                    incidentsRef.removeEventListener(incidentsListener)
-                    requestsRef.removeEventListener(requestsListener)
+                    incidentsQuery.removeEventListener(incidentsListener)
+                    requestsQuery.removeEventListener(requestsListener)
                 }
             } else {
                 onDispose {}
@@ -461,8 +462,7 @@ class GuardianActivity : ComponentActivity() {
                 },
                 confirmButton = {
                     Button(onClick = {
-                        serverUrl = tempUrl.trim()
-                        prefs.setCloudflareEndpoint(serverUrl)
+                        prefs.setCloudflareEndpoint(tempUrl.trim())
                         showSettingsDialog = false
                     }) {
                         Text("Save")
@@ -478,7 +478,7 @@ class GuardianActivity : ComponentActivity() {
     }
 
     private fun loadCachedImage(base64: String?, url: String?, onLoaded: (Bitmap?) -> Unit) {
-        val cacheKey = base64?.take(32) ?: url ?: return onLoaded(null)
+        val cacheKey = if (!base64.isNullOrBlank()) "b64_${base64.hashCode()}_${base64.length}" else url ?: return onLoaded(null)
         val cached = imageCache.get(cacheKey)
         if (cached != null) {
             onLoaded(cached)
@@ -720,7 +720,7 @@ fun PauseRequestCard(
                     ) {
                         Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Approve 15m")
+                        Text("Approve ${request.durationMinutes}m")
                     }
 
                     OutlinedButton(

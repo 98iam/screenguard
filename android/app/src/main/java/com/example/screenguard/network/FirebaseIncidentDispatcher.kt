@@ -94,12 +94,15 @@ object FirebaseIncidentDispatcher {
                         Log.e(TAG, "Failed pushing incident to Firebase RTDB", err)
                     }
 
-                // If Storage is accessible, optionally upload high-res WEBP
+                val isWebp = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                val ext = if (isWebp) "webp" else "jpg"
+
+                // If Storage is accessible, optionally upload high-res image
                 if (imageBytes != null) {
                     try {
                         val storageRef = FirebaseStorage.getInstance().reference
                             .child("screenshots")
-                            .child("${incidentId}.webp")
+                            .child("${incidentId}.$ext")
 
                         storageRef.putBytes(imageBytes)
                             .addOnSuccessListener {

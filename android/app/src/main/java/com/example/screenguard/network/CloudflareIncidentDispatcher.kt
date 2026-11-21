@@ -3,6 +3,8 @@ package com.example.screenguard.network
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +29,7 @@ object CloudflareIncidentDispatcher {
         .build()
 
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun getDeviceId(context: Context): String {
         return try {
@@ -77,15 +80,13 @@ object CloudflareIncidentDispatcher {
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 75, stream)
                     }
                     val imageBytes = stream.toByteArray()
-                    val mediaType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        "image/webp".toMediaTypeOrNull()
-                    } else {
-                        "image/jpeg".toMediaTypeOrNull()
-                    }
+                    val isWebp = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    val ext = if (isWebp) "webp" else "jpg"
+                    val mediaType = (if (isWebp) "image/webp" else "image/jpeg").toMediaTypeOrNull()
 
                     multipartBuilder.addFormDataPart(
                         "screenshot",
-                        "incident_${timestamp}.webp",
+                        "incident_${timestamp}.$ext",
                         imageBytes.toRequestBody(mediaType)
                     )
                 }
@@ -139,13 +140,13 @@ object CloudflareIncidentDispatcher {
 
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
-                        onComplete(true, "Request sent to Guardian!")
+                        mainHandler.post { onComplete(true, "Request sent to Guardian!") }
                     } else {
-                        onComplete(false, "Server returned code: ${response.code}")
+                        mainHandler.post { onComplete(false, "Server returned code: ${response.code}") }
                     }
                 }
             } catch (e: Exception) {
-                onComplete(false, e.message ?: "Network error")
+                mainHandler.post { onComplete(false, e.message ?: "Network error") }
             }
         }
     }

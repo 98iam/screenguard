@@ -111,9 +111,15 @@ fun ParentPairingScreen(
     var isGenerating by remember { mutableStateOf(false) }
     var listenerRef by remember { mutableStateOf<ValueEventListener?>(null) }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(pairingCode) {
         onDispose {
-            // Clean up listener if any
+            pairingCode?.let { code ->
+                listenerRef?.let { l ->
+                    com.google.firebase.database.FirebaseDatabase.getInstance()
+                        .getReference("devices").child("pairings").child(code)
+                        .removeEventListener(l)
+                }
+            }
         }
     }
 
@@ -269,6 +275,10 @@ fun ParentDashboardScreen(
 
     // Real-time synchronization
     DisposableEffect(parentId, childDeviceId) {
+        val db = com.google.firebase.database.FirebaseDatabase.getInstance()
+        val incRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("incidents")
+        val reqRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests")
+
         val incListener = FamilyRepository.attachIncidentsListener(parentId, childDeviceId) { list ->
             incidents = list
         }
@@ -280,7 +290,8 @@ fun ParentDashboardScreen(
         )
 
         onDispose {
-            // Detach listeners if needed
+            incRef.removeEventListener(incListener)
+            reqRef.removeEventListener(reqListener)
         }
     }
 

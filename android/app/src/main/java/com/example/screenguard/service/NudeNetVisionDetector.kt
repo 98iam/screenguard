@@ -145,70 +145,74 @@ object NudeNetVisionDetector {
             }
             floatBuffer.rewind()
 
-            val tensor = OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong()))
-
-            val results = session.run(Collections.singletonMap(inName, tensor))
-            val outputTensor = results[0]
-
-            // YOLOv8 output shape is [1, 22, 2100]
-            val output = outputTensor.value as? Array<Array<FloatArray>>
+            var tensor: OnnxTensor? = null
+            var results: OrtSession.Result? = null
             val detections = mutableListOf<DetectionResult>()
 
-            if (output != null && output.isNotEmpty() && output[0].size >= 22) {
-                val predictions = output[0]
-                val numAnchors = predictions[0].size // 2100
+            try {
+                tensor = OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong()))
+                results = session.run(Collections.singletonMap(inName, tensor))
+                val outputTensor = results[0]
 
-                var bestMatchScore = 0f
-                var bestMatchLabel = ""
+                // YOLOv8 output shape is [1, 22, 2100]
+                val output = outputTensor.value as? Array<Array<FloatArray>>
 
-                for (anchor in 0 until numAnchors) {
-                    var anchorMaxScore = 0f
-                    var anchorBestClass = -1
+                if (output != null && output.isNotEmpty() && output[0].size >= 22) {
+                    val predictions = output[0]
+                    val numAnchors = predictions[0].size // 2100
 
-                    for (c in 0 until 18) {
-                        val score = predictions[4 + c][anchor]
-                        if (score > anchorMaxScore) {
-                            anchorMaxScore = score
-                            anchorBestClass = c
+                    var bestMatchScore = 0f
+                    var bestMatchLabel = ""
+
+                    for (anchor in 0 until numAnchors) {
+                        var anchorMaxScore = 0f
+                        var anchorBestClass = -1
+
+                        for (c in 0 until 18) {
+                            val score = predictions[4 + c][anchor]
+                            if (score > anchorMaxScore) {
+                                anchorMaxScore = score
+                                anchorBestClass = c
+                            }
+                        }
+
+                        if (anchorMaxScore >= confThreshold && anchorBestClass >= 0 && anchorBestClass < LABELS.size) {
+                            val label = LABELS[anchorBestClass]
+                            if (TARGET_CLASSES.contains(label) && anchorMaxScore > bestMatchScore) {
+                                bestMatchScore = anchorMaxScore
+                                bestMatchLabel = label
+                            }
                         }
                     }
 
-                    if (anchorMaxScore >= confThreshold && anchorBestClass >= 0 && anchorBestClass < LABELS.size) {
-                        val label = LABELS[anchorBestClass]
-                        if (TARGET_CLASSES.contains(label) && anchorMaxScore > bestMatchScore) {
-                            bestMatchScore = anchorMaxScore
-                            bestMatchLabel = label
+                    if (bestMatchScore >= confThreshold && bestMatchLabel.isNotEmpty()) {
+                        val isExplicit = EXPLICIT_CLASSES.contains(bestMatchLabel)
+                        val friendlyName = when (bestMatchLabel) {
+                            "FEMALE_BREAST_COVERED" -> "Bikini / Swimwear (Revealing)"
+                            "FEMALE_GENITALIA_COVERED" -> "Swimwear / Undergarment"
+                            "BUTTOCKS_COVERED" -> "Revealing Swimwear Bottom"
+                            "FEMALE_BREAST_EXPOSED" -> "Explicit Adult Content"
+                            "FEMALE_GENITALIA_EXPOSED" -> "Explicit Adult Content"
+                            "MALE_GENITALIA_EXPOSED" -> "Explicit Adult Content"
+                            "BUTTOCKS_EXPOSED" -> "Exposed Nudity"
+                            "ANUS_EXPOSED" -> "Explicit Adult Content"
+                            else -> "Explicit Content"
                         }
-                    }
-                }
 
-                if (bestMatchScore >= confThreshold && bestMatchLabel.isNotEmpty()) {
-                    val isExplicit = EXPLICIT_CLASSES.contains(bestMatchLabel)
-                    val friendlyName = when (bestMatchLabel) {
-                        "FEMALE_BREAST_COVERED" -> "Bikini / Swimwear (Revealing)"
-                        "FEMALE_GENITALIA_COVERED" -> "Swimwear / Undergarment"
-                        "BUTTOCKS_COVERED" -> "Revealing Swimwear Bottom"
-                        "FEMALE_BREAST_EXPOSED" -> "Explicit Adult Content"
-                        "FEMALE_GENITALIA_EXPOSED" -> "Explicit Adult Content"
-                        "MALE_GENITALIA_EXPOSED" -> "Explicit Adult Content"
-                        "BUTTOCKS_EXPOSED" -> "Exposed Nudity"
-                        "ANUS_EXPOSED" -> "Explicit Adult Content"
-                        else -> "Explicit Content"
-                    }
-
-                    detections.add(
-                        DetectionResult(
-                            label = bestMatchLabel,
-                            humanReadableName = friendlyName,
-                            score = bestMatchScore,
-                            isExplicit = isExplicit
+                        detections.add(
+                            DetectionResult(
+                                label = bestMatchLabel,
+                                humanReadableName = friendlyName,
+                                score = bestMatchScore,
+                                isExplicit = isExplicit
+                            )
                         )
-                    )
+                    }
                 }
+            } finally {
+                try { tensor?.close() } catch (ignored: Exception) {}
+                try { results?.close() } catch (ignored: Exception) {}
             }
-
-            tensor.close()
-            results.close()
 
             return@withContext detections
         } catch (e: Exception) {
