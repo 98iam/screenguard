@@ -120,12 +120,22 @@ object NudeNetVisionDetector {
         val env = ortEnv ?: return@withContext emptyList()
         val inName = inputName ?: return@withContext emptyList()
 
+        var safeSoftwareBitmap: Bitmap? = null
+        var scaledBitmap: Bitmap? = null
+
         try {
-            // Resize bitmap to 320x320
-            val scaledBitmap = if (bitmap.width == INPUT_SIZE && bitmap.height == INPUT_SIZE) {
-                bitmap
+            // Ensure software bitmap (cannot call getPixels() on Config#HARDWARE bitmaps)
+            safeSoftwareBitmap = if (bitmap.config == Bitmap.Config.HARDWARE) {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: bitmap
             } else {
-                Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true)
+                bitmap
+            }
+
+            // Resize bitmap to 320x320
+            scaledBitmap = if (safeSoftwareBitmap.width == INPUT_SIZE && safeSoftwareBitmap.height == INPUT_SIZE) {
+                safeSoftwareBitmap
+            } else {
+                Bitmap.createScaledBitmap(safeSoftwareBitmap, INPUT_SIZE, INPUT_SIZE, true)
             }
 
             val numPixels = INPUT_SIZE * INPUT_SIZE
@@ -163,6 +173,8 @@ object NudeNetVisionDetector {
 
                     var bestMatchScore = 0f
                     var bestMatchLabel = ""
+                    var highestAnyScore = 0f
+                    var highestAnyLabel = ""
 
                     for (anchor in 0 until numAnchors) {
                         var anchorMaxScore = 0f
@@ -176,11 +188,18 @@ object NudeNetVisionDetector {
                             }
                         }
 
-                        if (anchorMaxScore >= confThreshold && anchorBestClass >= 0 && anchorBestClass < LABELS.size) {
+                        if (anchorBestClass in LABELS.indices) {
                             val label = LABELS[anchorBestClass]
-                            if (TARGET_CLASSES.contains(label) && anchorMaxScore > bestMatchScore) {
-                                bestMatchScore = anchorMaxScore
-                                bestMatchLabel = label
+                            if (anchorMaxScore > highestAnyScore) {
+                                highestAnyScore = anchorMaxScore
+                                highestAnyLabel = label
+                            }
+
+                            if (anchorMaxScore >= confThreshold && TARGET_CLASSES.contains(label)) {
+                                if (anchorMaxScore > bestMatchScore) {
+                                    bestMatchScore = anchorMaxScore
+                                    bestMatchLabel = label
+                                }
                             }
                         }
                     }
@@ -199,6 +218,7 @@ object NudeNetVisionDetector {
                             else -> "Explicit Content"
                         }
 
+                        Log.i(TAG, "🎯 Detection Match: $bestMatchLabel ($bestMatchScore) >= $confThreshold")
                         detections.add(
                             DetectionResult(
                                 label = bestMatchLabel,
@@ -207,7 +227,11 @@ object NudeNetVisionDetector {
                                 isExplicit = isExplicit
                             )
                         )
+                    } else {
+                        Log.d(TAG, "Scan completed. No target >= $confThreshold (Top overall: $highestAnyLabel at $highestAnyScore)")
                     }
+                } else {
+                    Log.w(TAG, "Unexpected output tensor value type: ${outputTensor.value?.javaClass}")
                 }
             } finally {
                 try { tensor?.close() } catch (ignored: Exception) {}
@@ -218,6 +242,13 @@ object NudeNetVisionDetector {
         } catch (e: Exception) {
             Log.e(TAG, "Vision detection error: ${e.message}", e)
             return@withContext emptyList()
+        } finally {
+            if (safeSoftwareBitmap != null && safeSoftwareBitmap != bitmap && safeSoftwareBitmap != scaledBitmap) {
+                try { safeSoftwareBitmap.recycle() } catch (ignored: Exception) {}
+            }
+            if (scaledBitmap != null && scaledBitmap != bitmap && scaledBitmap != safeSoftwareBitmap) {
+                try { scaledBitmap.recycle() } catch (ignored: Exception) {}
+            }
         }
     }
 }

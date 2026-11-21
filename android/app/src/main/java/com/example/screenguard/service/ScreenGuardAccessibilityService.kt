@@ -483,7 +483,15 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                     try {
                         val rawBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
                         if (rawBitmap != null) {
-                            bitmap = Bitmap.createScaledBitmap(rawBitmap, 320, 320, true)
+                            // Hardware buffers cannot be accessed via getPixels(); convert to software ARGB_8888
+                            val softCopy = rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                            if (softCopy != null) {
+                                bitmap = Bitmap.createScaledBitmap(softCopy, 320, 320, true)
+                                if (bitmap != softCopy) {
+                                    softCopy.recycle()
+                                }
+                            }
+                            rawBitmap.recycle()
                         }
                     } catch (e: Exception) {
                         Log.e("ScreenGuardService", "Vision screenshot wrap error", e)
@@ -494,7 +502,7 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                     if (bitmap != null) {
                         serviceScope.launch {
                             try {
-                                val detections = NudeNetVisionDetector.detect(bitmap, confThreshold = 0.35f)
+                                val detections = NudeNetVisionDetector.detect(bitmap, confThreshold = 0.28f)
                                 if (detections.isNotEmpty()) {
                                     val topDetection = detections.first()
                                     val pm = packageManager
@@ -504,6 +512,8 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                                     } catch (e: Exception) {
                                         targetPkg
                                     }
+
+                                    Log.w("ScreenGuardService", "🚨 NudeNet AI Triggered: $appLabel - ${topDetection.label} (${topDetection.score})")
 
                                     mainHandler.post {
                                         performGlobalAction(GLOBAL_ACTION_HOME)
