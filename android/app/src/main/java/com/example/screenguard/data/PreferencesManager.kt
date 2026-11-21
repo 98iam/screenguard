@@ -62,6 +62,23 @@ val PRESET_18PLUS_MANHWA = setOf(
     "bikini",
     "swimsuit",
     "lingerie",
+    "naked",
+    "nacked",
+    "nakked",
+    "neked",
+    "nude",
+    "nudes",
+    "topless",
+    "boobs",
+    "tits",
+    "pussy",
+    "dick",
+    "cock",
+    "porn",
+    "porno",
+    "sex",
+    "erotica",
+    "onlyfans",
     "TEST_BLOCKED_WORD"
 )
 

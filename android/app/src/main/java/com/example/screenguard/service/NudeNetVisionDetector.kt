@@ -171,64 +171,103 @@ object NudeNetVisionDetector {
                     val predictions = output[0]
                     val numAnchors = predictions[0].size // 2100
 
-                    var bestMatchScore = 0f
-                    var bestMatchLabel = ""
-                    var highestAnyScore = 0f
-                    var highestAnyLabel = ""
+                    // Record maximum score observed for each of the 18 classes
+                    val classMaxScores = FloatArray(18)
 
                     for (anchor in 0 until numAnchors) {
-                        var anchorMaxScore = 0f
-                        var anchorBestClass = -1
-
                         for (c in 0 until 18) {
                             val score = predictions[4 + c][anchor]
-                            if (score > anchorMaxScore) {
-                                anchorMaxScore = score
-                                anchorBestClass = c
-                            }
-                        }
-
-                        if (anchorBestClass in LABELS.indices) {
-                            val label = LABELS[anchorBestClass]
-                            if (anchorMaxScore > highestAnyScore) {
-                                highestAnyScore = anchorMaxScore
-                                highestAnyLabel = label
-                            }
-
-                            if (anchorMaxScore >= confThreshold && TARGET_CLASSES.contains(label)) {
-                                if (anchorMaxScore > bestMatchScore) {
-                                    bestMatchScore = anchorMaxScore
-                                    bestMatchLabel = label
-                                }
+                            if (score > classMaxScores[c]) {
+                                classMaxScores[c] = score
                             }
                         }
                     }
 
-                    if (bestMatchScore >= confThreshold && bestMatchLabel.isNotEmpty()) {
-                        val isExplicit = EXPLICIT_CLASSES.contains(bestMatchLabel)
-                        val friendlyName = when (bestMatchLabel) {
-                            "FEMALE_BREAST_COVERED" -> "Bikini / Swimwear (Revealing)"
-                            "FEMALE_GENITALIA_COVERED" -> "Swimwear / Undergarment"
-                            "BUTTOCKS_COVERED" -> "Revealing Swimwear Bottom"
-                            "FEMALE_BREAST_EXPOSED" -> "Explicit Adult Content"
-                            "FEMALE_GENITALIA_EXPOSED" -> "Explicit Adult Content"
-                            "MALE_GENITALIA_EXPOSED" -> "Explicit Adult Content"
-                            "BUTTOCKS_EXPOSED" -> "Exposed Nudity"
-                            "ANUS_EXPOSED" -> "Explicit Adult Content"
-                            else -> "Explicit Content"
-                        }
+                    fun getScore(label: String): Float {
+                        val idx = LABELS.indexOf(label)
+                        return if (idx >= 0) classMaxScores[idx] else 0f
+                    }
 
-                        Log.i(TAG, "🎯 Detection Match: $bestMatchLabel ($bestMatchScore) >= $confThreshold")
+                    var matchedLabel = ""
+                    var matchedScore = 0f
+                    var matchedReason = ""
+                    var isExplicit = false
+
+                    // 1. Direct check on strict explicit classes (lower threshold 0.20f)
+                    for (label in EXPLICIT_CLASSES) {
+                        val score = getScore(label)
+                        if (score >= 0.20f && score > matchedScore) {
+                            matchedLabel = label
+                            matchedScore = score
+                            matchedReason = "Explicit Adult Content"
+                            isExplicit = true
+                        }
+                    }
+
+                    // 2. Direct check on swimwear / lingerie / suggestive classes (threshold 0.22f)
+                    if (matchedLabel.isEmpty()) {
+                        for (label in SUGGESTIVE_CLASSES) {
+                            val score = getScore(label)
+                            if (score >= 0.22f && score > matchedScore) {
+                                matchedLabel = label
+                                matchedScore = score
+                                matchedReason = when (label) {
+                                    "FEMALE_BREAST_COVERED" -> "Bikini / Revealing Swimwear"
+                                    "FEMALE_GENITALIA_COVERED" -> "Bikini Bottom / Underwear"
+                                    "BUTTOCKS_COVERED" -> "Swimwear Bottom"
+                                    else -> "Suggestive Attire"
+                                }
+                                isExplicit = false
+                            }
+                        }
+                    }
+
+                    // 3. Compound check: Exposed midriff/belly with suggestive or topless indicators
+                    if (matchedLabel.isEmpty()) {
+                        val bellyScore = getScore("BELLY_EXPOSED")
+                        if (bellyScore >= 0.35f) {
+                            val breastCovered = getScore("FEMALE_BREAST_COVERED")
+                            val breastExposed = getScore("FEMALE_BREAST_EXPOSED")
+                            val bottomCovered = getScore("FEMALE_GENITALIA_COVERED")
+                            val buttCovered = getScore("BUTTOCKS_COVERED")
+                            val buttExposed = getScore("BUTTOCKS_EXPOSED")
+
+                            val maxHint = maxOf(breastCovered, breastExposed, bottomCovered, buttCovered, buttExposed)
+                            if (maxHint >= 0.05f) {
+                                matchedLabel = when {
+                                    breastExposed >= 0.05f -> "FEMALE_BREAST_EXPOSED"
+                                    breastCovered >= 0.05f -> "FEMALE_BREAST_COVERED"
+                                    bottomCovered >= 0.05f -> "FEMALE_GENITALIA_COVERED"
+                                    buttExposed >= 0.05f -> "BUTTOCKS_EXPOSED"
+                                    else -> "BUTTOCKS_COVERED"
+                                }
+                                matchedScore = bellyScore
+                                matchedReason = "Revealing Swimwear / Topless (${(bellyScore * 100).toInt()}% skin exposure)"
+                                isExplicit = breastExposed >= 0.05f || buttExposed >= 0.05f
+                            }
+                        }
+                    }
+
+                    if (matchedLabel.isNotEmpty()) {
+                        Log.i(TAG, "🎯 Detection Match: $matchedLabel ($matchedScore) -> $matchedReason")
                         detections.add(
                             DetectionResult(
-                                label = bestMatchLabel,
-                                humanReadableName = friendlyName,
-                                score = bestMatchScore,
+                                label = matchedLabel,
+                                humanReadableName = matchedReason,
+                                score = matchedScore,
                                 isExplicit = isExplicit
                             )
                         )
                     } else {
-                        Log.d(TAG, "Scan completed. No target >= $confThreshold (Top overall: $highestAnyLabel at $highestAnyScore)")
+                        var topScore = 0f
+                        var topLabel = ""
+                        for (i in 0 until 18) {
+                            if (classMaxScores[i] > topScore) {
+                                topScore = classMaxScores[i]
+                                topLabel = LABELS[i]
+                            }
+                        }
+                        Log.d(TAG, "Scan completed. No target matched (Top overall: $topLabel at $topScore)")
                     }
                 } else {
                     Log.w(TAG, "Unexpected output tensor value type: ${outputTensor.value?.javaClass}")

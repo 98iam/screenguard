@@ -479,17 +479,34 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                     mainHandler.removeCallbacks(timeoutRunnable)
                     val hwBuffer = screenshotResult.hardwareBuffer
                     val colorSpace = screenshotResult.colorSpace
-                    var bitmap: Bitmap? = null
+                    var fullScaledBitmap: Bitmap? = null
+                    var cropScaledBitmap: Bitmap? = null
                     try {
                         val rawBitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
                         if (rawBitmap != null) {
-                            // Hardware buffers cannot be accessed via getPixels(); convert to software ARGB_8888
                             val softCopy = rawBitmap.copy(Bitmap.Config.ARGB_8888, false)
                             if (softCopy != null) {
-                                bitmap = Bitmap.createScaledBitmap(softCopy, 320, 320, true)
-                                if (bitmap != softCopy) {
-                                    softCopy.recycle()
+                                fullScaledBitmap = Bitmap.createScaledBitmap(softCopy, 320, 320, true)
+
+                                val w = softCopy.width
+                                val h = softCopy.height
+                                val cropSize = minOf(w, h)
+                                val startY = if (h > w) {
+                                    ((h - cropSize) * 0.35f).toInt().coerceIn(0, h - cropSize)
+                                } else {
+                                    0
                                 }
+                                try {
+                                    val cropped = Bitmap.createBitmap(softCopy, 0, startY, cropSize, cropSize)
+                                    cropScaledBitmap = Bitmap.createScaledBitmap(cropped, 320, 320, true)
+                                    if (cropScaledBitmap != cropped) {
+                                        cropped.recycle()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("ScreenGuardService", "Failed to crop screen bitmap", e)
+                                }
+
+                                softCopy.recycle()
                             }
                             rawBitmap.recycle()
                         }
@@ -499,10 +516,17 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                         hwBuffer.close()
                     }
 
-                    if (bitmap != null) {
+                    if (cropScaledBitmap != null || fullScaledBitmap != null) {
                         serviceScope.launch {
                             try {
-                                val detections = NudeNetVisionDetector.detect(bitmap, confThreshold = 0.28f)
+                                var detections = emptyList<NudeNetVisionDetector.DetectionResult>()
+                                if (cropScaledBitmap != null) {
+                                    detections = NudeNetVisionDetector.detect(cropScaledBitmap)
+                                }
+                                if (detections.isEmpty() && fullScaledBitmap != null) {
+                                    detections = NudeNetVisionDetector.detect(fullScaledBitmap)
+                                }
+
                                 if (detections.isNotEmpty()) {
                                     val topDetection = detections.first()
                                     val pm = packageManager
@@ -534,10 +558,12 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                                         targetPkg = targetPkg,
                                         appLabel = appLabel,
                                         matchedWord = "[AI VISION: ${topDetection.humanReadableName}]",
-                                        bitmap = bitmap
+                                        bitmap = fullScaledBitmap ?: cropScaledBitmap
                                     )
                                 }
                             } finally {
+                                try { cropScaledBitmap?.recycle() } catch (ignored: Exception) {}
+                                try { fullScaledBitmap?.recycle() } catch (ignored: Exception) {}
                                 isVisionScanning = false
                             }
                         }
