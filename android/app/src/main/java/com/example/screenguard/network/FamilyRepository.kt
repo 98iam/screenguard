@@ -7,6 +7,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import com.example.screenguard.data.DEFAULT_BLOCKED_PACKAGES
+import com.example.screenguard.data.PRESET_18PLUS_MANHWA
 import com.example.screenguard.data.PreferencesManager
 import com.google.firebase.database.*
 import com.google.firebase.storage.FirebaseStorage
@@ -51,7 +53,9 @@ object FamilyRepository {
         val blockIncognito: Boolean = true,
         val familyDns: Boolean = true,
         val freeTimeUntil: Long = 0L,
-        val uninstallUnlockedUntil: Long = 0L
+        val uninstallUnlockedUntil: Long = 0L,
+        val blockedWords: List<String> = emptyList(),
+        val blockedPackages: List<String> = emptyList()
     )
 
     // ==========================================
@@ -235,14 +239,28 @@ object FamilyRepository {
                 val blockIncognito = snapshot.child("blockIncognito").getValue(Boolean::class.java) ?: true
                 val familyDns = snapshot.child("familyDns").getValue(Boolean::class.java) ?: true
 
+                val wordsSnap = snapshot.child("blockedWords")
+                val wordsList = wordsSnap.children.mapNotNull { it.getValue(String::class.java) }
+                val pkgsSnap = snapshot.child("blockedPackages")
+                val pkgsList = pkgsSnap.children.mapNotNull { it.getValue(String::class.java) }
+
                 prefs.setFreeTimeUntil(freeTimeUntil)
                 prefs.setUninstallUnlockedUntil(uninstallUnlockedUntil)
+
+                if (wordsSnap.exists()) {
+                    prefs.setBlockedWords(wordsList.toSet())
+                }
+                if (pkgsSnap.exists()) {
+                    prefs.setBlockedPackages(pkgsList.toSet())
+                }
 
                 val rules = ChildRules(
                     blockIncognito = blockIncognito,
                     familyDns = familyDns,
                     freeTimeUntil = freeTimeUntil,
-                    uninstallUnlockedUntil = uninstallUnlockedUntil
+                    uninstallUnlockedUntil = uninstallUnlockedUntil,
+                    blockedWords = wordsList,
+                    blockedPackages = pkgsList
                 )
                 mainHandler.post { onUpdate(rules) }
             }
@@ -384,5 +402,89 @@ object FamilyRepository {
         val until = System.currentTimeMillis() + (durationMinutes * 60 * 1000)
         db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
             .child("freeTimeUntil").setValue(until)
+    }
+
+    fun attachRulesListener(
+        parentId: String,
+        childDeviceId: String,
+        onRules: (ChildRules) -> Unit
+    ): ValueEventListener {
+        val db = FirebaseDatabase.getInstance()
+        val ref = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
+
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val blockIncognito = snapshot.child("blockIncognito").getValue(Boolean::class.java) ?: true
+                val familyDns = snapshot.child("familyDns").getValue(Boolean::class.java) ?: true
+                val freeTimeUntil = snapshot.child("freeTimeUntil").getValue(Long::class.java) ?: 0L
+                val uninstallUnlockedUntil = snapshot.child("uninstallUnlockedUntil").getValue(Long::class.java) ?: 0L
+
+                val blockedWordsList = mutableListOf<String>()
+                if (snapshot.hasChild("blockedWords")) {
+                    for (c in snapshot.child("blockedWords").children) {
+                        c.getValue(String::class.java)?.let { blockedWordsList.add(it) }
+                    }
+                } else {
+                    blockedWordsList.addAll(PRESET_18PLUS_MANHWA)
+                }
+
+                val blockedPackagesList = mutableListOf<String>()
+                if (snapshot.hasChild("blockedPackages")) {
+                    for (c in snapshot.child("blockedPackages").children) {
+                        c.getValue(String::class.java)?.let { blockedPackagesList.add(it) }
+                    }
+                } else {
+                    blockedPackagesList.addAll(DEFAULT_BLOCKED_PACKAGES)
+                }
+
+                val rules = ChildRules(
+                    blockIncognito = blockIncognito,
+                    familyDns = familyDns,
+                    freeTimeUntil = freeTimeUntil,
+                    uninstallUnlockedUntil = uninstallUnlockedUntil,
+                    blockedWords = blockedWordsList,
+                    blockedPackages = blockedPackagesList
+                )
+
+                mainHandler.post { onRules(rules) }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.e(TAG, "Rules listener error: ${error.message}")
+            }
+        }
+
+        ref.addValueEventListener(listener)
+        return listener
+    }
+
+    fun addBlockedWord(parentId: String, childDeviceId: String, currentWords: List<String>, word: String) {
+        val trimmed = word.trim()
+        if (trimmed.isEmpty()) return
+        val updated = currentWords.toMutableSet().apply { add(trimmed) }.toList().sorted()
+        val db = FirebaseDatabase.getInstance()
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
+            .child("blockedWords").setValue(updated)
+    }
+
+    fun removeBlockedWord(parentId: String, childDeviceId: String, currentWords: List<String>, word: String) {
+        val updated = currentWords.filter { !it.equals(word, ignoreCase = true) }
+        val db = FirebaseDatabase.getInstance()
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
+            .child("blockedWords").setValue(updated)
+    }
+
+    fun toggleBlockedPackage(parentId: String, childDeviceId: String, currentPackages: List<String>, pkg: String, block: Boolean) {
+        val trimmed = pkg.trim().lowercase()
+        if (trimmed.isEmpty()) return
+        val set = currentPackages.toMutableSet()
+        if (block) set.add(trimmed) else set.remove(trimmed)
+        val db = FirebaseDatabase.getInstance()
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
+            .child("blockedPackages").setValue(set.toList().sorted())
+    }
+
+    fun removeBlockedPackage(parentId: String, childDeviceId: String, currentPackages: List<String>, pkg: String) {
+        toggleBlockedPackage(parentId, childDeviceId, currentPackages, pkg, block = false)
     }
 }

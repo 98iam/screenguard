@@ -175,7 +175,9 @@ object PairingManager {
                         "blockIncognito" to true,
                         "familyDns" to true,
                         "freeTimeUntil" to 0L,
-                        "uninstallUnlockedUntil" to 0L
+                        "uninstallUnlockedUntil" to 0L,
+                        "blockedWords" to com.example.screenguard.data.PRESET_18PLUS_MANHWA.toList(),
+                        "blockedPackages" to com.example.screenguard.data.DEFAULT_BLOCKED_PACKAGES.toList()
                     )
                 )
 

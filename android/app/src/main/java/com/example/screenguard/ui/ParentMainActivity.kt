@@ -278,11 +278,12 @@ fun ParentDashboardScreen(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Incidents", "Approvals", "Rules & Status")
+    val tabs = listOf("Incidents", "Word Guard", "App Lock", "Approvals", "Rules & Status")
 
     var incidents by remember { mutableStateOf<List<FamilyRepository.Incident>>(emptyList()) }
     var freeTimeRequests by remember { mutableStateOf<List<FamilyRepository.FreeTimeRequest>>(emptyList()) }
     var uninstallRequests by remember { mutableStateOf<List<FamilyRepository.UninstallRequest>>(emptyList()) }
+    var childRules by remember { mutableStateOf<FamilyRepository.ChildRules?>(null) }
     var viewingScreenshot by remember { mutableStateOf<FamilyRepository.Incident?>(null) }
 
     // Real-time synchronization
@@ -290,6 +291,7 @@ fun ParentDashboardScreen(
         val db = com.google.firebase.database.FirebaseDatabase.getInstance()
         val incRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("incidents")
         val reqRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests")
+        val rulesRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
 
         var isInitialSync = true
         val knownIncidentIds = mutableSetOf<String>()
@@ -314,10 +316,16 @@ fun ParentDashboardScreen(
             onFreeTime = { ftList -> freeTimeRequests = ftList },
             onUninstall = { uList -> uninstallRequests = uList }
         )
+        val rulesListener = FamilyRepository.attachRulesListener(
+            parentId = parentId,
+            childDeviceId = childDeviceId,
+            onRules = { r -> childRules = r }
+        )
 
         onDispose {
             incRef.removeEventListener(incListener)
             reqRef.removeEventListener(reqListener)
+            rulesRef.removeEventListener(rulesListener)
         }
     }
 
@@ -361,10 +369,11 @@ fun ParentDashboardScreen(
         }
 
         // Tab Navigation
-        TabRow(
+        ScrollableTabRow(
             selectedTabIndex = selectedTab,
             containerColor = Slate900,
-            contentColor = CyberSky
+            contentColor = CyberSky,
+            edgePadding = 12.dp
         ) {
             tabs.forEachIndexed { index, title ->
                 Tab(
@@ -385,13 +394,23 @@ fun ParentDashboardScreen(
         // Tab Contents
         when (selectedTab) {
             0 -> IncidentsTab(incidents = incidents, onScreenshotClick = { viewingScreenshot = it })
-            1 -> ApprovalsTab(
+            1 -> WordGuardTab(
+                parentId = parentId,
+                childDeviceId = childDeviceId,
+                blockedWords = childRules?.blockedWords ?: emptyList()
+            )
+            2 -> AppLockTab(
+                parentId = parentId,
+                childDeviceId = childDeviceId,
+                blockedPackages = childRules?.blockedPackages ?: emptyList()
+            )
+            3 -> ApprovalsTab(
                 parentId = parentId,
                 childDeviceId = childDeviceId,
                 freeTimeRequests = freeTimeRequests,
                 uninstallRequests = uninstallRequests
             )
-            2 -> RulesTab(onUnpair = onUnpair)
+            4 -> RulesTab(onUnpair = onUnpair)
         }
     }
 
@@ -714,6 +733,440 @@ fun ApprovalsTab(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun WordGuardTab(
+    parentId: String,
+    childDeviceId: String,
+    blockedWords: List<String>
+) {
+    val context = LocalContext.current
+    var searchQuery by remember { mutableStateOf("") }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var newWordInput by remember { mutableStateOf("") }
+
+    val filteredWords = remember(blockedWords, searchQuery) {
+        if (searchQuery.isBlank()) blockedWords
+        else blockedWords.filter { it.contains(searchQuery.trim(), ignoreCase = true) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // Search bar & Add Button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Search blocked words...", fontSize = 13.sp, color = Slate400) },
+                leadingIcon = {
+                    Icon(Icons.Default.Search, contentDescription = "Search", tint = Slate400, modifier = Modifier.size(18.dp))
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear", tint = Slate400, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = CyberSky,
+                    unfocusedBorderColor = Slate800,
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedContainerColor = Slate900,
+                    unfocusedContainerColor = Slate900
+                ),
+                shape = RoundedCornerShape(10.dp)
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Button(
+                onClick = {
+                    newWordInput = ""
+                    showAddDialog = true
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = CyberSky),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add", tint = Slate950, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Add", color = Slate950, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Info count
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${filteredWords.size} words active",
+                fontSize = 12.sp,
+                color = Slate400,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = "Syncs instantly to child",
+                fontSize = 11.sp,
+                color = EmeraldGreen
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (filteredWords.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = 40.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Text(
+                    text = if (searchQuery.isNotEmpty()) "No words matching '$searchQuery'" else "No blocked words.",
+                    color = Slate400,
+                    fontSize = 14.sp
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(filteredWords, key = { it }) { word ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Slate900),
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = word,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = {
+                                    FamilyRepository.removeBlockedWord(parentId, childDeviceId, blockedWords, word)
+                                    Toast.makeText(context, "Removed '$word'", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete",
+                                    tint = RoseRed.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add Word Dialog
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            containerColor = Slate900,
+            title = {
+                Text("Block New Word / Phrase", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        "Enter the exact word or phrase to block. When detected on the child's screen, ScreenGuard blocks it immediately.",
+                        color = Slate400,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newWordInput,
+                        onValueChange = { newWordInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("e.g. badsite, gamble, mature", fontSize = 13.sp, color = Slate400) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = CyberSky,
+                            unfocusedBorderColor = Slate800,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val word = newWordInput.trim()
+                        if (word.isNotEmpty()) {
+                            FamilyRepository.addBlockedWord(parentId, childDeviceId, blockedWords, word)
+                            Toast.makeText(context, "Added '$word' to blocklist", Toast.LENGTH_SHORT).show()
+                            showAddDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CyberSky)
+                ) {
+                    Text("Add Word", color = Slate950, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) {
+                    Text("Cancel", color = Slate400)
+                }
+            }
+        )
+    }
+}
+
+data class PresetApp(val name: String, val packageName: String, val category: String)
+
+val PRESET_APPS = listOf(
+    PresetApp("Google Play Store", "com.android.vending", "Prevents installing new apps"),
+    PresetApp("Cookie Manga", "chat.kijang.manga.cookie.browser", "Manhwa / Comics reader"),
+    PresetApp("TikTok", "com.zhiliaoapp.musically", "Short video feed"),
+    PresetApp("Roblox", "com.roblox.client", "Online gaming platform"),
+    PresetApp("Instagram", "com.instagram.android", "Social media & reels"),
+    PresetApp("Snapchat", "com.snapchat.android", "Photo & video messaging"),
+    PresetApp("Discord", "com.discord", "Community & chat servers"),
+    PresetApp("YouTube", "com.google.android.youtube", "Video streaming"),
+    PresetApp("Google Chrome", "com.android.chrome", "Web browser")
+)
+
+@Composable
+fun AppLockTab(
+    parentId: String,
+    childDeviceId: String,
+    blockedPackages: List<String>
+) {
+    val context = LocalContext.current
+    var showCustomAppDialog by remember { mutableStateOf(false) }
+    var customPackageInput by remember { mutableStateOf("") }
+
+    val presetPackageSet = remember { PRESET_APPS.map { it.packageName }.toSet() }
+    val customBlocked = remember(blockedPackages) {
+        blockedPackages.filter { it !in presetPackageSet }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "APP RESTRICTIONS",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Slate400,
+                    letterSpacing = 1.sp
+                )
+                Text(
+                    text = "Instantly closed if launched on child device",
+                    fontSize = 11.sp,
+                    color = Slate400
+                )
+            }
+            Button(
+                onClick = {
+                    customPackageInput = ""
+                    showCustomAppDialog = true
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add Custom App", tint = CyberSky, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Block Custom", fontSize = 11.sp, color = Color.White)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Preset App List
+        PRESET_APPS.forEach { app ->
+            val isBlocked = blockedPackages.any { it.equals(app.packageName, ignoreCase = true) }
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (isBlocked) RoseRed.copy(alpha = 0.4f) else Slate800)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = app.name,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = app.category,
+                            fontSize = 11.sp,
+                            color = if (isBlocked) RoseRed else Slate400
+                        )
+                    }
+
+                    Switch(
+                        checked = isBlocked,
+                        onCheckedChange = { checked ->
+                            FamilyRepository.toggleBlockedPackage(parentId, childDeviceId, blockedPackages, app.packageName, checked)
+                            val msg = if (checked) "Blocked ${app.name}" else "Unblocked ${app.name}"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = RoseRed,
+                            uncheckedThumbColor = Slate400,
+                            uncheckedTrackColor = Slate800
+                        )
+                    )
+                }
+            }
+        }
+
+        // Custom Blocked Packages Section
+        if (customBlocked.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+                text = "CUSTOM BLOCKED PACKAGES",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = Slate400,
+                letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            customBlocked.forEach { pkg ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    colors = CardDefaults.cardColors(containerColor = Slate900),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = pkg,
+                            fontSize = 13.sp,
+                            color = Color.White,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                FamilyRepository.removeBlockedPackage(parentId, childDeviceId, blockedPackages, pkg)
+                                Toast.makeText(context, "Unblocked $pkg", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Remove", tint = RoseRed, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showCustomAppDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomAppDialog = false },
+            containerColor = Slate900,
+            title = {
+                Text("Block Custom App Package", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        "Enter Android package name (e.g. com.zhiliaoapp.musically, com.supercell.clashofclans).",
+                        color = Slate400,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = customPackageInput,
+                        onValueChange = { customPackageInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("com.example.app", fontSize = 13.sp, color = Slate400) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = CyberSky,
+                            unfocusedBorderColor = Slate800,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val pkg = customPackageInput.trim().lowercase()
+                        if (pkg.isNotEmpty()) {
+                            FamilyRepository.toggleBlockedPackage(parentId, childDeviceId, blockedPackages, pkg, true)
+                            Toast.makeText(context, "Blocked $pkg", Toast.LENGTH_SHORT).show()
+                            showCustomAppDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RoseRed)
+                ) {
+                    Text("Block App", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomAppDialog = false }) {
+                    Text("Cancel", color = Slate400)
+                }
+            }
+        )
     }
 }
 

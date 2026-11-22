@@ -3,6 +3,7 @@ package com.example.screenguard.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.screenguard.service.MatchMode
+import com.example.screenguard.service.WordDetector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -386,6 +387,17 @@ class PreferencesManager(context: Context) {
             return true
         }
         return false
+    }
+
+    fun setBlockedWords(words: Set<String>) {
+        prefs.edit().putStringSet(KEY_BLOCKED_WORDS, words).apply()
+        _blockedWords.value = words
+        WordDetector.clearCache()
+    }
+
+    fun setBlockedPackages(packages: Set<String>) {
+        prefs.edit().putStringSet(KEY_BLOCKED_PACKAGES, packages).apply()
+        _blockedPackages.value = packages
     }
 
     fun addWhitelistPackage(pkg: String): Boolean {
