@@ -27,6 +27,7 @@ This document outlines all identified bugs, architectural flaws, security vulner
 - [Minor Flaws & Usability Enhancements (Nice to Have)](#minor-flaws--usability-enhancements-nice-to-have)
   - [16. Autostart Registry Launches python.exe Instead of pythonw.exe](#16-autostart-registry-launches-pythonexe-instead-of-pythonwexe)
   - [17. Floating Desktop Widget Steals Focus and Flickers Every Second](#17-floating-desktop-widget-steals-focus-and-flickers-every-second)
+- [Additional Android Findings — Deep Audit (18–54)](#additional-android-findings--deep-audit-1854)
 
 ---
 
@@ -51,6 +52,48 @@ This document outlines all identified bugs, architectural flaws, security vulner
 | **15** | Duplicate Root `main.py` vs `app/main.py` | Windows Desktop | Low | Divergent entry points, confusing maintenance |
 | **16** | Autostart Registry Launches Console Window | Windows Desktop | Low | Intrusive command prompt window on startup |
 | **17** | Widget 1Hz `SetWindowPos` Stutter/Flicker | Windows Desktop | Low | Full-screen app micro-stutter / focus theft |
+
+### Additional Android Findings (Deep Audit, 18–54)
+
+| ID | Title | Severity | Impact |
+|---|---|---|---|
+| **18** | Parent pairing listener removed immediately | Critical | Parent never observes a successful pairing |
+| **19** | Parent-approved pause never reaches child | Critical | Break/pause feature is a no-op |
+| **20** | Block screenshot uses HARDWARE bitmap | Critical | Every word-block screenshot is lost |
+| **21** | `allowBackup` with no backup rules | High | PIN hash and prefs can be backed up/exfiltrated |
+| **22** | Static-salt PIN hashing | High | 4–6 digit PIN brute-forced offline in seconds |
+| **23** | Vision loop ignores pause and screen-off | High | Screenshots every 2 s during approved break |
+| **24** | Child rules listener never retried | High | Background rules stop applying after activity dies |
+| **25** | `blockIncognito`/`familyDns` never applied | High | Remote toggles are silently ignored |
+| **26** | Overbroad default blocked words | High | Browser closed by cookie banners/news text |
+| **27** | Unpair clears parent locally only | High | Child keeps uploading after "unpair" |
+| **28** | Cloudflare device ID mismatch | Medium | Devices cannot be correlated across backends |
+| **29** | Missing `<queries>` declaration | High | Home-launcher detection fails on Android 11+ |
+| **30** | Play Store toggle state desync | Medium | Toggle disagrees with actual blocked packages |
+| **31** | VPN reports "Active" when tunnel failed | High | User believes filtering is on while DNS is broken |
+| **32** | Pairing is unauthenticated/hijackable | Critical | Attacker can pair a child to themselves |
+| **33** | Firebase request ID sent to Cloudflare | Medium | Cloudflare approvals fail or target wrong request |
+| **34** | `confThreshold` ignored; 0.05 compound hints | Medium | Untunable, high false-positive vision blocking |
+| **35** | Background polling loops | Medium | Battery drain while activity is stopped |
+| **36** | Stale `MainActivity` state | Low | Stale unlock/pause UI (dead code) |
+| **37** | DNS-only filtering is bypassable | Medium | DoH/DoT bypasses the family filter |
+| **38** | Screenshots never deleted | Medium | Unbounded public storage growth |
+| **39** | Incident history capped at 60 | Medium | Older incidents silently disappear |
+| **40** | Notification permission never requested | Medium | Service notification hidden on Android 13+ |
+| **41** | `startForeground` failure swallowed | Medium | Half-started VPN, service killed |
+| **42** | No PIN gate on disabling protection | High | Child can switch protection off |
+| **43** | `commit()` on caller thread | Low | Main-thread disk write on first run |
+| **44** | Screenshot cadence mismatch | Low | Duplicate blocks/incidents |
+| **45** | 12 MB ONNX model fully buffered | Medium | Memory spike / silent vision disable |
+| **46** | No tests for risky subsystems | Low | Pairing/VPN/rules regressions undetected |
+| **47** | Accessibility service broadly exported | Medium | Privacy exposure amplified by #4 |
+| **48** | DNS forwarder: no backoff, fixed buffer, no TC | Medium | Large replies fail; CPU spin on errors |
+| **49** | Launcher cache refreshed every event | Low | Binder IPC on each accessibility event |
+| **50** | `TEST_BLOCKED_WORD` ships by default | Low | Placeholder causes false blocks |
+| **51** | Misspelled duplicate blocklist entries | Low | Noise/maintenance |
+| **52** | `String.format` without `Locale` | Low | Non-ASCII digits in some locales |
+| **53** | ONNX `.so` not 16 KB aligned | Low | Load failure on 16 KB-page devices |
+| **54** | Release build unminified | Low | Larger APK, easier reverse engineering |
 
 ---
 
@@ -324,6 +367,236 @@ This document outlines all identified bugs, architectural flaws, security vulner
 - **Concrete Fix:**
   Configure topmost status and window positioning once during widget creation, and only update label text during 1Hz ticks.
 - **If we skip it:** Full-screen games and video players may experience micro-stuttering or focus loss every second.
+
+---
+
+## Additional Android Findings — Deep Audit (18–54)
+
+> These entries were added after a line-by-line re-audit of the Android sources at `00b09d7`. Findings already covered above are intentionally **not repeated**: #1 (IPv4 checksum), #2 (DNS head-of-line blocking/misroute), #3 (bitmap recycle), #4 (open Firebase rules), #11 (main-thread bitmap work), #12 (double dispatch), #13 (pairing cleanup), #14 (dead activities).
+>
+> Note on #12: the duplicate write also happens while the child **is** paired — `FamilyRepository` writes the family node and `FirebaseIncidentDispatcher` writes the global `/incidents` node — so the duplication is not limited to unpaired devices.
+
+### 18. Parent Pairing Listener Is Removed the Moment the Code Appears
+- **Location:** `android/app/src/main/java/com/example/screenguard/ui/ParentMainActivity.kt:L114-124`
+- **Problem:** The `DisposableEffect` is keyed on `pairingCode`. When a code is generated, Compose disposes the previous effect; `onDispose` reads the **updated** `pairingCode` and removes `listenerRef` — the listener that was just registered for that same code.
+- **Impact:** The parent never observes `status == "PAIRED"`. `onPaired` never fires and onboarding can never complete, even though the child writes `PAIRED`.
+- **Suggested direction:** Key the effect on `Unit` (or capture the code in a local `val`) and only remove the listener when leaving the screen; register the listener outside the keyed effect.
+
+### 19. Parent-Approved Pause Never Reaches the Child
+- **Location:** `android/app/src/main/java/com/example/screenguard/network/FirebaseIncidentDispatcher.kt:L168` (definition only); writer at `GuardianActivity.kt:L228-229`
+- **Problem:** `attachPauseStatusListener` has zero call sites. The guardian writes `devices/{deviceId}/isPaused` and `pauseUntil`, but no child component listens to that node.
+- **Impact:** The "Break"/pause approval is a no-op on the child device.
+- **Suggested direction:** Attach the listener from the child service/activity at startup (and after pairing), or have the service observe `devices/{deviceId}` directly.
+
+### 20. Word-Block Screenshot Path Still Feeds a HARDWARE Bitmap to Software APIs
+- **Location:** `android/app/src/main/java/com/example/screenguard/service/ScreenGuardAccessibilityService.kt:L639-652`
+- **Problem:** `Bitmap.wrapHardwareBuffer()` returns `Config.HARDWARE` on API 30+. The code then calls `Bitmap.createScaledBitmap(rawBitmap, …)` and `rawBitmap.copy(…)`, both of which throw `IllegalArgumentException: Software rendering doesn't support hardware bitmaps`. The exception is caught and `bitmap` stays `null`.
+- **Impact:** Every word-triggered block loses its screenshot; only text incidents are uploaded. (The vision path was fixed at `:487` by making an `ARGB_8888` copy first; this path was missed.)
+- **Suggested direction:** Copy to `ARGB_8888` before scaling/copying, exactly as the vision path does.
+
+### 21. `allowBackup=true` With No Backup Rules
+- **Location:** `android/app/src/main/AndroidManifest.xml:L8`; `res/xml/backup_rules.xml` and `res/xml/data_extraction_rules.xml` exist but are unreferenced
+- **Problem:** Neither `android:fullBackupContent` nor `android:dataExtractionRules` is set. SharedPreferences — including the guardian PIN hash, parent ID, device ID, blocklists and endpoints — are included in cloud/adb backups.
+- **Impact:** Credential and configuration exfiltration from a backup; combined with #22 the PIN is recoverable.
+- **Suggested direction:** Set `android:dataExtractionRules`/`android:fullBackupContent` and exclude the prefs file, or set `allowBackup="false"`.
+
+### 22. PIN Hashed With a Hard-Coded Salt and Fast Hash
+- **Location:** `android/app/src/main/java/com/example/screenguard/data/PreferencesManager.kt:L147-152`
+- **Problem:** `hashPin` uses the constant `"screenguard_salt_v1_"` and a single SHA-256 pass over a 4–6 digit PIN.
+- **Impact:** At most 1.1M candidates; a static salt makes offline brute force trivial (seconds on a phone). A leaked backup (see #21) exposes the PIN.
+- **Suggested direction:** Per-install random salt plus a slow KDF (PBKDF2/Argon2) with a meaningful iteration count.
+
+### 23. Vision Loop Ignores Pause and Screen-Off
+- **Location:** `android/app/src/main/java/com/example/screenguard/service/ScreenGuardAccessibilityService.kt:L159-162`, `:464`
+- **Problem:** The periodic loop checks `isFreeTimeActive()` but never `isAppPaused()`, and runs regardless of screen state. `checkScreenForExplicitVision` also only checks free time.
+- **Impact:** During a parent-approved break — and with the screen off — the service still captures a screenshot every 2 seconds, wasting battery and violating the pause contract.
+- **Suggested direction:** Add `isAppPaused()` and a screen-on check; stop the loop when the display is off.
+
+### 24. Child Rules Listener Attached Once, Before Pairing, Never Retried
+- **Location:** `ScreenGuardAccessibilityService.kt:L129`; `FamilyRepository.kt:L226` returns `null` when `parentId` is empty
+- **Problem:** If the accessibility service starts before pairing (the normal onboarding order), the listener is `null` and is never retried. Only the activity's listener applies rules, and it dies with the activity.
+- **Impact:** Background free-time/uninstall approvals stop working once the child activity is closed.
+- **Suggested direction:** Attach on pairing success and retry when `parentId` changes; re-attach in `onServiceConnected` if needed.
+
+### 25. `blockIncognito` and `familyDns` Rules Are Read but Never Applied
+- **Location:** `FamilyRepository.kt:L235-243` (parsed), `:238-239` (only two values persisted); `ChildMainActivity.kt:L131-134`
+- **Problem:** Neither flag is written to `PreferencesManager`, and the VPN starts unconditionally when paired (`ChildMainActivity.kt:L113-124`). The only writer of `preferences.blockIncognito` is the dead `MainActivity.kt:L1320`.
+- **Impact:** Remote incognito/DNS toggles are silently ignored; `familyDns=false` does not stop the VPN.
+- **Suggested direction:** Persist both flags and gate incognito detection / VPN start on them.
+
+### 26. Default Blocked Words Match Ordinary Page Text
+- **Location:** `PreferencesManager.kt:L55-82`
+- **Problem:** The default set includes `adult`, `mature`, `sex`, `cookie`, `bikini`, `swimsuit`, `lingerie`, plus explicit terms. Matching is substring/exact over all on-screen text (`ScreenGuardAccessibilityService.kt:L428-451`), and the default whitelist contains only ScreenGuard packages and SystemUI.
+- **Impact:** `cookie` alone matches every cookie banner and most news/e-commerce pages; the browser is closed within seconds of normal browsing. With the settings UI unreachable (#14), the list cannot be edited.
+- **Suggested direction:** Ship a minimal list, require whole-word matches for ambiguous terms, and allowlist common UI/browser packages.
+
+### 27. "Unpair" Clears Parent State Only
+- **Location:** `ParentMainActivity.kt:L95-98`
+- **Problem:** `onUnpair` only calls `prefs.setPairedChild("")` and resets local state. No backend node is cleared and the child is not notified.
+- **Impact:** The child remains paired and keeps uploading incidents/screenshots to a parent who believes the device is unpaired.
+- **Suggested direction:** Mark the family link inactive/remove it and have the child observe the change.
+
+### 28. Cloudflare Device ID Does Not Match the Firebase Device ID
+- **Location:** `android/app/src/main/java/com/example/screenguard/network/CloudflareIncidentDispatcher.kt:L34-38`
+- **Problem:** Cloudflare uses `"${Build.MODEL}_${androidId.take(6)}"` while Firebase uses a generated UUID-based `deviceId`.
+- **Impact:** The two backends cannot correlate the same child; Cloudflare pause/respond calls target a different identity than the parent app.
+- **Suggested direction:** Use one stable device ID for both dispatchers.
+
+### 29. Missing `<queries>` Breaks Home-Launcher Detection on Android 11+
+- **Location:** no `<queries>` in any manifest; `ScreenGuardAccessibilityService.kt:L190` calls `queryIntentActivities(ACTION_MAIN/CATEGORY_HOME)`
+- **Problem:** Package-visibility filtering on API 30+ returns only the app's own package, so `cachedHomeLaunchers` stays empty.
+- **Impact:** The launcher is not treated as protected; lint reports `QueryPermissionsNeeded`.
+- **Suggested direction:** Declare a `<queries>` intent for `ACTION_MAIN` + `CATEGORY_HOME`.
+
+### 30. Play Store Toggle Desyncs From the Blocked Package Set
+- **Location:** `PreferencesManager.kt:L308-337`
+- **Problem:** `setBlockPlayStore` keeps `_blockPlayStore` and `_blockedPackages` in sync, but `addBlockedPackage`/`removeBlockedPackage` mutate only `_blockedPackages`.
+- **Impact:** Adding/removing `com.android.vending` manually leaves the toggle showing the wrong state.
+- **Suggested direction:** Derive the toggle from the package set, or update both in every mutation.
+
+### 31. VPN Reports "Protection Active" Even When the Tunnel Failed
+- **Location:** `android/app/src/main/java/com/example/screenguard/service/FamilyDnsVpnService.kt:L29-47`, `:69`, `:150-152`
+- **Problem:** `startForeground` with the "Protection Active" notification runs before `establishDnsTunnel()`. A `null` from `builder.establish()` is not checked and all exceptions are swallowed.
+- **Impact:** The user is told filtering is active while DNS may be completely broken (see #1) or the tunnel never came up.
+- **Suggested direction:** Post the notification only after a successful `establish()`, surface failures, and stop the service on failure.
+
+### 32. Pairing Is Unauthenticated and Hijackable
+- **Location:** `android/app/src/main/java/com/example/screenguard/network/PairingManager.kt:L41`, `:109-148`
+- **Problem:** Codes come from Kotlin `Random` (not `SecureRandom`) in a 900k space; the `pairings` node is world-readable/writable (#4); there is no rate limit or attempt counter. Any client can read a `WAITING` code, rewrite its `parentId`, or set `status = "PAIRED"`. The child transaction never verifies who wrote the session.
+- **Impact:** A child can be paired to an attacker, who then controls free time, uninstall unlocks and incident visibility.
+- **Suggested direction:** Use `SecureRandom` with a longer code, authenticate the session, bind it to the creating parent, rate-limit attempts, and validate server-side.
+
+### 33. Guardian Sends Firebase Request IDs to the Cloudflare Endpoint
+- **Location:** `android/app/src/main/java/com/example/screenguard/GuardianActivity.kt:L367,L371` → `:242-252`
+- **Problem:** `req.id` comes from the Firebase `pause_requests` snapshot, but it is posted to `$serverUrl/api/requests/respond`, which expects a Cloudflare request ID.
+- **Impact:** Cloudflare approvals 404 or approve the wrong request.
+- **Suggested direction:** Send the Cloudflare request ID field (or drop the cross-backend call).
+
+### 34. `confThreshold` Is Ignored and Compound Hints Use 0.05
+- **Location:** `android/app/src/main/java/com/example/screenguard/service/NudeNetVisionDetector.kt:L117`, `:199`, `:211`, `:228`, `:236`
+- **Problem:** The `confThreshold` parameter is declared but never used; thresholds are hard-coded at 0.20/0.22/0.35, and the "compound" branch accepts hints as low as 0.05. There is no NMS or box/objectness validation — only per-class max over 2,100 anchors.
+- **Impact:** Frequent false positives on swimwear/beach/fitness content and no way to tune sensitivity from the caller.
+- **Suggested direction:** Honor `confThreshold`, validate boxes, apply NMS, and raise the compound hint threshold.
+
+### 35. Child Activity Polling Loops Keep Running When Backgrounded
+- **Location:** `android/app/src/main/java/com/example/screenguard/ui/ChildMainActivity.kt:L186-189`, `:371-372`
+- **Problem:** `LaunchedEffect(Unit) { while (true) { … delay(1500) } }` and the 1-second clock are not lifecycle-aware.
+- **Impact:** Continuous wakeups while the activity is stopped, on top of the 2-second vision loop.
+- **Suggested direction:** Use `repeatOnLifecycle(Lifecycle.State.STARTED)` or a lifecycle-aware flow.
+
+### 36. `MainActivity` Reads Non-Observable State
+- **Location:** `android/app/src/main/java/com/example/screenguard/MainActivity.kt:L901-903`
+- **Problem:** `isUnlocked` is a plain `Boolean` and `isAppPaused` is computed once from `System.currentTimeMillis()`, so neither recomposes as state/time changes.
+- **Impact:** Stale unlock/pause banners. Only relevant if #14 is fixed by reviving the activity rather than deleting it.
+- **Suggested direction:** Collect an unlock `StateFlow` and tick the clock in a lifecycle-aware effect.
+
+### 37. DNS-Only Filtering Is Trivially Bypassed
+- **Location:** `FamilyDnsVpnService.kt:L60-66`
+- **Problem:** The VPN adds three resolver addresses (`1.1.1.3`, `1.0.0.3`, `185.228.168.168`) and routes only those `/32`s. Apps using DoH/DoT or a hard-coded resolver bypass it entirely. Distinct from #1/#2, which describe breakage rather than coverage.
+- **Impact:** The adult-content filter can be bypassed by any modern browser.
+- **Suggested direction:** Route all DNS, block known DoH endpoints, or filter per-app/at the IP layer.
+
+### 38. Screenshots Are Never Deleted
+- **Location:** `FamilyRepository.kt:L133-140`; `FirebaseIncidentDispatcher.kt:L103-110`
+- **Problem:** Both dispatchers upload screenshots to Storage with no retention or cleanup path (no `.delete()` anywhere in the codebase).
+- **Impact:** Unbounded storage growth; combined with #4 every object is publicly readable.
+- **Suggested direction:** Add a retention policy and delete objects when incidents are pruned.
+
+### 39. Incident History Is Capped at 60 With Base64 Payloads
+- **Location:** `FamilyRepository.kt:L295`
+- **Problem:** `limitToLast(60)` silently drops older incidents, and each node embeds a base64 thumbnail.
+- **Impact:** Parents lose history, and each read can transfer many megabytes.
+- **Suggested direction:** Paginate metadata and keep images only in Storage URLs.
+
+### 40. `POST_NOTIFICATIONS` Is Declared but Never Requested
+- **Location:** `android/app/src/child/AndroidManifest.xml` (permission); no runtime request in `ChildMainActivity`
+- **Problem:** Android 13+ requires a runtime grant; the code never asks.
+- **Impact:** The persistent VPN/accessibility notification is hidden, so the user cannot see or stop the service from the shade.
+- **Suggested direction:** Request the permission during onboarding.
+
+### 41. `startForeground` Failure Is Swallowed, Then the VPN Starts Anyway
+- **Location:** `FamilyDnsVpnService.kt:L29-47`
+- **Problem:** The `startForeground` exception is caught and logged, then `establishDnsTunnel()` runs regardless.
+- **Impact:** On Android 12+ the process can be killed shortly after, leaving a half-started VPN with no notification.
+- **Suggested direction:** Stop the service when `startForeground` fails.
+
+### 42. No PIN Gate on Disabling Protection
+- **Location:** `ScreenGuardDeviceAdminReceiver.kt`; PIN checks exist only in dead `MainActivity.kt:L140,L241`
+- **Problem:** Nothing requires the guardian PIN before disabling the accessibility service, deactivating device admin, or clearing app data. `onDisableRequested` only returns a message.
+- **Impact:** A child can switch protection off from Android Settings.
+- **Suggested direction:** Gate settings changes with the PIN and use device-admin policies where possible.
+
+### 43. `commit()` on the Calling Thread
+- **Location:** `PreferencesManager.kt:L194`
+- **Problem:** `prefs.edit().putString(KEY_DEVICE_ID, id).commit()` performs a synchronous disk write.
+- **Impact:** Main-thread jank/ANR on first run; lint reports `ApplySharedPref`.
+- **Suggested direction:** Use `apply()`.
+
+### 44. Vision and Block Screenshot Cadences Conflict
+- **Location:** `ScreenGuardAccessibilityService.kt:L469` (1.5 s vision throttle) vs `:596` (5 s block cooldown)
+- **Problem:** After a word block, the vision path can immediately capture and block again.
+- **Impact:** Duplicate incidents and repeated `performGlobalAction(HOME)` calls.
+- **Suggested direction:** Share one cooldown between the word and vision paths.
+
+### 45. The 12 MB ONNX Model Is Fully Buffered Into Memory
+- **Location:** `NudeNetVisionDetector.kt:L88,L97`
+- **Problem:** `assets.open(...).readBytes()` holds the 12,150,158-byte asset in a `ByteArray`, then `createSession` copies it again.
+- **Impact:** A 24–36 MB transient spike on `minSdk 24` devices risks `OutOfMemoryError`; failure is only logged and vision stays silently disabled.
+- **Suggested direction:** Stream from the asset descriptor or memory-map it, and surface initialization failure in the UI.
+
+### 46. No Tests for the Risky Subsystems
+- **Location:** `android/app/src/test`, `android/app/src/androidTest`
+- **Problem:** Only `WordDetectorTest` and `MainScreenTest` exist; there are no tests for pairing, VPN packet construction, rules application or vision thresholds.
+- **Impact:** Regressions in the highest-risk areas go undetected (the bugs in this section are examples).
+- **Suggested direction:** Add unit tests for pairing transactions, DNS packet building and rules mapping.
+
+### 47. Accessibility Service Is Broadly Exported
+- **Location:** `android/app/src/child/AndroidManifest.xml:L38`; `res/xml/screenguard_accessibility_service_config.xml` (`canTakeScreenshot="true"`)
+- **Problem:** The service accepts events from all apps and can take screenshots, with no additional restrictions beyond the bind permission.
+- **Impact:** A broad privacy exposure surface, amplified by the public Storage rules (#4).
+- **Suggested direction:** Document and minimize the captured data; ensure only the system can bind; audit screenshot retention.
+
+### 48. DNS Forwarder: No Backoff, Fixed 4096 Buffer, No Truncation Handling
+- **Location:** `FamilyDnsVpnService.kt:L102`, `:143-145`
+- **Problem:** A fixed 4,096-byte receive buffer and no EDNS/TC handling; the catch block loops immediately while `isRunning` is true. This is distinct from #2 (head-of-line blocking and misrouting).
+- **Impact:** Large/DNSSEC responses fail or truncate; transient errors can spin the CPU.
+- **Suggested direction:** Size the buffer from EDNS, handle the TC bit, and add a short backoff on errors.
+
+### 49. Launcher Cache Refreshes on Every Accessibility Event
+- **Location:** `ScreenGuardAccessibilityService.kt:L187-190`
+- **Problem:** `cachedHomeLaunchers.isEmpty()` forces a refresh whenever the cache is empty — which is always the case when #29 makes the query return nothing.
+- **Impact:** A package-manager Binder call on every accessibility event.
+- **Suggested direction:** Fix #29 and cache the negative result with a TTL.
+
+### 50. `TEST_BLOCKED_WORD` Ships in the Default List
+- **Location:** `PreferencesManager.kt:L82`
+- **Problem:** A placeholder test token is enabled for every new install.
+- **Impact:** Unnecessary false blocks.
+- **Suggested direction:** Remove it from production defaults.
+
+### 51. Misspelled Duplicate Blocklist Entries
+- **Location:** `PreferencesManager.kt:L66-68`
+- **Problem:** `"nacked"`, `"nakked"`, `"neked"` sit alongside `"naked"`.
+- **Impact:** Noise and maintenance overhead.
+- **Suggested direction:** Deduplicate and spell-check the list.
+
+### 52. `String.format` Without an Explicit `Locale`
+- **Location:** `MainActivity.kt:L542`
+- **Problem:** Uses the default locale; lint reports `DefaultLocale`.
+- **Impact:** Non-ASCII digits in some locales.
+- **Suggested direction:** Pass `Locale.US` (or a fixed locale).
+
+### 53. ONNX Runtime `.so` Is Not 16 KB Aligned
+- **Location:** `com.microsoft.onnxruntime:onnxruntime-android:1.18.0` (`arm64-v8a/libonnxruntime.so`)
+- **Problem:** Lint reports `Aligned16KB`; the library is not aligned for 16 KB memory pages.
+- **Impact:** The native library may fail to load on Android 15+ devices configured with 16 KB pages.
+- **Suggested direction:** Upgrade ONNX Runtime to a 16 KB-aligned release.
+
+### 54. Release Build Is Unminified
+- **Location:** `android/app/build.gradle.kts:L34`
+- **Problem:** `isMinifyEnabled = false` with the default ProGuard file only.
+- **Impact:** Larger APK and easier reverse engineering, which aggravates the exposed Firebase configuration (#4).
+- **Suggested direction:** Enable R8 with the necessary keep rules.
 
 ---
 
