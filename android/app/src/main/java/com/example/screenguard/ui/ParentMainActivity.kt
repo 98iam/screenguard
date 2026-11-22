@@ -7,7 +7,9 @@ import android.os.Bundle
 import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -78,6 +80,16 @@ class ParentMainActivity : ComponentActivity() {
 fun ParentAppRoot(prefs: PreferencesManager) {
     var pairedChildId by remember { mutableStateOf(prefs.getPairedChildId()) }
     var parentId by remember { mutableStateOf(prefs.getParentId().ifEmpty { prefs.getDeviceId() }) }
+
+    // Request notification permission on Android 13+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val notifLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { /* permission result handled */ }
+        LaunchedEffect(Unit) {
+            notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     if (pairedChildId.isEmpty()) {
         ParentPairingScreen(
@@ -279,7 +291,21 @@ fun ParentDashboardScreen(
         val incRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("incidents")
         val reqRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests")
 
+        var isInitialSync = true
+        val knownIncidentIds = mutableSetOf<String>()
+
         val incListener = FamilyRepository.attachIncidentsListener(parentId, childDeviceId) { list ->
+            if (isInitialSync) {
+                knownIncidentIds.addAll(list.map { it.id })
+                isInitialSync = false
+            } else {
+                for (incident in list) {
+                    if (incident.id !in knownIncidentIds) {
+                        knownIncidentIds.add(incident.id)
+                        ParentNotificationHelper.showIncidentNotification(context, incident)
+                    }
+                }
+            }
             incidents = list
         }
         val reqListener = FamilyRepository.attachRequestsListener(
