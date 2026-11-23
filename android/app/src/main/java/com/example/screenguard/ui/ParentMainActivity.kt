@@ -1,5 +1,6 @@
 package com.example.screenguard.ui
 
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
@@ -11,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -42,9 +45,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
 import com.example.screenguard.data.PreferencesManager
 import com.example.screenguard.network.FamilyRepository
 import com.example.screenguard.network.PairingManager
+import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import java.text.SimpleDateFormat
 import java.util.*
@@ -79,13 +84,13 @@ class ParentMainActivity : ComponentActivity() {
 @Composable
 fun ParentAppRoot(prefs: PreferencesManager) {
     var pairedChildId by remember { mutableStateOf(prefs.getPairedChildId()) }
-    var parentId by remember { mutableStateOf(prefs.getParentId().ifEmpty { prefs.getDeviceId() }) }
+    val parentId by remember { mutableStateOf(prefs.getParentId().ifEmpty { prefs.getDeviceId() }) }
 
     // Request notification permission on Android 13+
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val notifLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
-        ) { /* permission result handled */ }
+        ) { /* handled */ }
         LaunchedEffect(Unit) {
             notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -94,7 +99,7 @@ fun ParentAppRoot(prefs: PreferencesManager) {
     if (pairedChildId.isEmpty()) {
         ParentPairingScreen(
             parentId = parentId,
-            onPaired = { childId, childModel ->
+            onPaired = { childId, _ ->
                 prefs.setParentPairing(parentId, "Guardian Parent")
                 prefs.setPairedChild(childId)
                 pairedChildId = childId
@@ -127,7 +132,7 @@ fun ParentPairingScreen(
         onDispose {
             pairingCode?.let { code ->
                 listenerRef?.let { l ->
-                    com.google.firebase.database.FirebaseDatabase.getInstance()
+                    FirebaseDatabase.getInstance()
                         .getReference("devices").child("pairings").child(code)
                         .removeEventListener(l)
                 }
@@ -217,7 +222,7 @@ fun ParentPairingScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Slate900),
                 shape = RoundedCornerShape(16.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
+                border = BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
             ) {
                 Column(
                     modifier = Modifier.padding(24.dp),
@@ -286,9 +291,27 @@ fun ParentDashboardScreen(
     var childRules by remember { mutableStateOf<FamilyRepository.ChildRules?>(null) }
     var viewingScreenshot by remember { mutableStateOf<FamilyRepository.Incident?>(null) }
 
+    // Android 13+ Notification permission prompt banner state
+    var hasNotifPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else true
+        )
+    }
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotifPermission = granted
+    }
+
     // Real-time synchronization
     DisposableEffect(parentId, childDeviceId) {
-        val db = com.google.firebase.database.FirebaseDatabase.getInstance()
+        val db = FirebaseDatabase.getInstance()
         val incRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("incidents")
         val reqRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("requests")
         val rulesRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
@@ -368,6 +391,52 @@ fun ParentDashboardScreen(
             }
         }
 
+        // Surfaced Android 13+ Notification Permission Banner
+        if (!hasNotifPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Surface(
+                color = Slate900,
+                border = BorderStroke(1.dp, AmberOrange.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .clip(RoundedCornerShape(8.dp))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.NotificationsActive,
+                            contentDescription = "Alerts",
+                            tint = AmberOrange,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "Enable notifications for real-time incident alerts",
+                            fontSize = 11.sp,
+                            color = Slate200
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            notifPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberOrange),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Enable", color = Slate950, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
         // Tab Navigation
         ScrollableTabRow(
             selectedTabIndex = selectedTab,
@@ -376,16 +445,40 @@ fun ParentDashboardScreen(
             edgePadding = 12.dp
         ) {
             tabs.forEachIndexed { index, title ->
+                val badgeCount = when (index) {
+                    0 -> incidents.size
+                    3 -> (freeTimeRequests.count { it.status == "PENDING" } + uninstallRequests.count { it.status == "PENDING" })
+                    else -> 0
+                }
+
                 Tab(
                     selected = selectedTab == index,
                     onClick = { selectedTab = index },
                     text = {
-                        Text(
-                            text = title,
-                            fontSize = 13.sp,
-                            fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selectedTab == index) CyberSky else Slate400
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = title,
+                                fontSize = 13.sp,
+                                fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selectedTab == index) CyberSky else Slate400
+                            )
+                            if (badgeCount > 0) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(if (index == 0) RoseRed else AmberOrange)
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        text = "$badgeCount",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
                     }
                 )
             }
@@ -393,7 +486,12 @@ fun ParentDashboardScreen(
 
         // Tab Contents
         when (selectedTab) {
-            0 -> IncidentsTab(incidents = incidents, onScreenshotClick = { viewingScreenshot = it })
+            0 -> IncidentsTab(
+                parentId = parentId,
+                childDeviceId = childDeviceId,
+                incidents = incidents,
+                onScreenshotClick = { viewingScreenshot = it }
+            )
             1 -> WordGuardTab(
                 parentId = parentId,
                 childDeviceId = childDeviceId,
@@ -402,7 +500,8 @@ fun ParentDashboardScreen(
             2 -> AppLockTab(
                 parentId = parentId,
                 childDeviceId = childDeviceId,
-                blockedPackages = childRules?.blockedPackages ?: emptyList()
+                blockedPackages = childRules?.blockedPackages ?: emptyList(),
+                exemptPackages = childRules?.exemptPackages ?: emptyList()
             )
             3 -> ApprovalsTab(
                 parentId = parentId,
@@ -423,7 +522,8 @@ fun ParentDashboardScreen(
                     .fillMaxWidth()
                     .padding(8.dp),
                 colors = CardDefaults.cardColors(containerColor = Slate900),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, Slate800)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -475,35 +575,147 @@ fun ParentDashboardScreen(
 
 @Composable
 fun IncidentsTab(
+    parentId: String,
+    childDeviceId: String,
     incidents: List<FamilyRepository.Incident>,
     onScreenshotClick: (FamilyRepository.Incident) -> Unit
 ) {
+    val context = LocalContext.current
+    var showClearConfirmDialog by remember { mutableStateOf(false) }
+
     if (incidents.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.CheckCircle, contentDescription = "Clean", tint = EmeraldGreen, modifier = Modifier.size(48.dp))
-                Spacer(modifier = Modifier.height(12.dp))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(24.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(EmeraldGreen.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = "Clean", tint = EmeraldGreen, modifier = Modifier.size(36.dp))
+                }
+                Spacer(modifier = Modifier.height(16.dp))
                 Text("All Clear!", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Text("No incidents detected on the child device.", fontSize = 13.sp, color = Slate400)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "No incidents detected on the child device. Real-time protection is actively guarding the screen.",
+                    fontSize = 13.sp,
+                    color = Slate400,
+                    textAlign = TextAlign.Center
+                )
             }
         }
     } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(incidents, key = { it.id }) { inc ->
-                IncidentItem(incident = inc, onClick = { onScreenshotClick(inc) })
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header with incident count and "Clear All Logs"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "INCIDENT LOGS",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Slate400,
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(RoseRed.copy(alpha = 0.2f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "${incidents.size}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = RoseRed
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = { showClearConfirmDialog = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Outlined.Delete, contentDescription = "Clear All", tint = RoseRed, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Clear All Logs", fontSize = 11.sp, color = RoseRed, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(incidents, key = { it.id }) { inc ->
+                    IncidentItem(
+                        incident = inc,
+                        onClick = { onScreenshotClick(inc) },
+                        onDelete = {
+                            FamilyRepository.deleteIncident(parentId, childDeviceId, inc.id)
+                            Toast.makeText(context, "Log deleted", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
             }
         }
+    }
+
+    // Clear All Confirmation Dialog
+    if (showClearConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmDialog = false },
+            containerColor = Slate900,
+            title = {
+                Text("Clear All Incident Logs?", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "This will permanently delete all ${incidents.size} incident records and captured screenshots from the cloud. This action cannot be undone.",
+                    color = Slate400,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        FamilyRepository.clearAllIncidents(parentId, childDeviceId)
+                        Toast.makeText(context, "All incident logs cleared", Toast.LENGTH_SHORT).show()
+                        showClearConfirmDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RoseRed)
+                ) {
+                    Text("Clear All", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmDialog = false }) {
+                    Text("Cancel", color = Slate400)
+                }
+            }
+        )
     }
 }
 
 @Composable
 fun IncidentItem(
     incident: FamilyRepository.Incident,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 ) {
     val timeFormatted = remember(incident.timestamp) {
         val sdf = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
@@ -516,7 +728,7 @@ fun IncidentItem(
             .clickable { onClick() },
         colors = CardDefaults.cardColors(containerColor = Slate900),
         shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+        border = BorderStroke(1.dp, Slate800)
     ) {
         Row(
             modifier = Modifier
@@ -566,6 +778,20 @@ fun IncidentItem(
                 Spacer(modifier = Modifier.width(8.dp))
                 Icon(Icons.Default.PhotoCamera, contentDescription = "Screenshot", tint = CyberSky, modifier = Modifier.size(18.dp))
             }
+
+            Spacer(modifier = Modifier.width(4.dp))
+
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "Delete Incident",
+                    tint = Slate400,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -607,7 +833,7 @@ fun ApprovalsTab(
                         .padding(vertical = 4.dp),
                     colors = CardDefaults.cardColors(containerColor = Slate900),
                     shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
+                    border = BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
@@ -674,7 +900,7 @@ fun ApprovalsTab(
                         .padding(vertical = 4.dp),
                     colors = CardDefaults.cardColors(containerColor = Slate900),
                     shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, RoseRed.copy(alpha = 0.5f))
+                    border = BorderStroke(1.dp, RoseRed.copy(alpha = 0.5f))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Row(
@@ -852,7 +1078,7 @@ fun WordGuardTab(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Slate900),
                         shape = RoundedCornerShape(10.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+                        border = BorderStroke(1.dp, Slate800)
                     ) {
                         Row(
                             modifier = Modifier
@@ -959,19 +1185,57 @@ val PRESET_APPS = listOf(
     PresetApp("Google Chrome", "com.android.chrome", "Web browser")
 )
 
+data class ExemptPresetApp(
+    val name: String,
+    val packageNames: List<String>,
+    val description: String
+)
+
+val PRESET_EXEMPT_APPS = listOf(
+    ExemptPresetApp(
+        name = "Google Pay",
+        packageNames = listOf("com.google.android.apps.nfc.p2p.in", "com.google.android.apps.walletnfcrel"),
+        description = "UPI payments & Google Wallet"
+    ),
+    ExemptPresetApp(
+        name = "PhonePe",
+        packageNames = listOf("com.phonepe.app"),
+        description = "UPI payments & banking"
+    ),
+    ExemptPresetApp(
+        name = "Paytm",
+        packageNames = listOf("net.one97.paytm"),
+        description = "Wallet & financial services"
+    ),
+    ExemptPresetApp(
+        name = "WhatsApp",
+        packageNames = listOf("com.whatsapp"),
+        description = "Personal chat & family calls"
+    )
+)
+
 @Composable
 fun AppLockTab(
     parentId: String,
     childDeviceId: String,
-    blockedPackages: List<String>
+    blockedPackages: List<String>,
+    exemptPackages: List<String>
 ) {
     val context = LocalContext.current
     var showCustomAppDialog by remember { mutableStateOf(false) }
     var customPackageInput by remember { mutableStateOf("") }
 
-    val presetPackageSet = remember { PRESET_APPS.map { it.packageName }.toSet() }
+    var showCustomExemptDialog by remember { mutableStateOf(false) }
+    var customExemptInput by remember { mutableStateOf("") }
+
+    val presetBlockedPackageSet = remember { PRESET_APPS.map { it.packageName }.toSet() }
     val customBlocked = remember(blockedPackages) {
-        blockedPackages.filter { it !in presetPackageSet }
+        blockedPackages.filter { it !in presetBlockedPackageSet }
+    }
+
+    val presetExemptAllPackages = remember { PRESET_EXEMPT_APPS.flatMap { it.packageNames }.toSet() }
+    val customExempt = remember(exemptPackages) {
+        exemptPackages.filter { it !in presetExemptAllPackages }
     }
 
     Column(
@@ -980,6 +1244,9 @@ fun AppLockTab(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
+        // ==========================================
+        // SECTION 1: EXEMPTED APPS (WHITELIST)
+        // ==========================================
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -987,10 +1254,205 @@ fun AppLockTab(
         ) {
             Column {
                 Text(
-                    text = "APP RESTRICTIONS",
+                    text = "EXEMPTED APPS (WHITELIST)",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Slate400,
+                    color = EmeraldGreen,
+                    letterSpacing = 1.sp
+                )
+                Text(
+                    text = "Bypasses all inspection & blocking",
+                    fontSize = 11.sp,
+                    color = Slate400
+                )
+            }
+            Button(
+                onClick = {
+                    customExemptInput = ""
+                    showCustomExemptDialog = true
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Slate800),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add Exemption", tint = EmeraldGreen, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Add Custom", fontSize = 11.sp, color = Color.White)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Explanation Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Slate900),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.35f))
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(EmeraldGreen.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Security, contentDescription = "Shield", tint = EmeraldGreen, modifier = Modifier.size(20.dp))
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Exempted apps (like Google Pay or Banking apps) run freely without screen monitoring or blocking.",
+                    fontSize = 12.sp,
+                    color = Slate200,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Preset Whitelist Quick Toggles
+        PRESET_EXEMPT_APPS.forEach { app ->
+            val isExempt = app.packageNames.any { pkg ->
+                exemptPackages.any { it.equals(pkg, ignoreCase = true) }
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                colors = CardDefaults.cardColors(containerColor = Slate900),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, if (isExempt) EmeraldGreen.copy(alpha = 0.5f) else Slate800)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = app.name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            if (isExempt) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(EmeraldGreen.copy(alpha = 0.2f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("EXEMPT", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = EmeraldGreen)
+                                }
+                            }
+                        }
+                        Text(
+                            text = app.description,
+                            fontSize = 11.sp,
+                            color = if (isExempt) EmeraldGreen else Slate400
+                        )
+                    }
+
+                    Switch(
+                        checked = isExempt,
+                        onCheckedChange = { checked ->
+                            var updated = exemptPackages
+                            app.packageNames.forEach { pkg ->
+                                FamilyRepository.toggleExemptPackage(parentId, childDeviceId, updated, pkg, checked)
+                                updated = if (checked) (updated + pkg).distinct() else updated.filter { !it.equals(pkg, ignoreCase = true) }
+                            }
+                            val msg = if (checked) "Exempted ${app.name} from monitoring" else "Removed exemption for ${app.name}"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = EmeraldGreen,
+                            uncheckedThumbColor = Slate400,
+                            uncheckedTrackColor = Slate800
+                        )
+                    )
+                }
+            }
+        }
+
+        // Custom Exempted Packages List
+        if (customExempt.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Text(
+                text = "CUSTOM EXEMPTED PACKAGES",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = Slate400,
+                letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+
+            customExempt.forEach { pkg ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    colors = CardDefaults.cardColors(containerColor = Slate900),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Slate800)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = pkg,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
+                            Text("Whitelisted package", fontSize = 10.sp, color = EmeraldGreen)
+                        }
+                        IconButton(
+                            onClick = {
+                                FamilyRepository.removeExemptPackage(parentId, childDeviceId, exemptPackages, pkg)
+                                Toast.makeText(context, "Removed exemption: $pkg", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Remove", tint = RoseRed, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(28.dp))
+        Divider(color = Slate800)
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ==========================================
+        // SECTION 2: BLOCKED APPS (APP LOCK)
+        // ==========================================
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "BLOCKED APPS (APP LOCK)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = RoseRed,
                     letterSpacing = 1.sp
                 )
                 Text(
@@ -1016,7 +1478,7 @@ fun AppLockTab(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Preset App List
+        // Preset Blocked App List
         PRESET_APPS.forEach { app ->
             val isBlocked = blockedPackages.any { it.equals(app.packageName, ignoreCase = true) }
             Card(
@@ -1025,7 +1487,7 @@ fun AppLockTab(
                     .padding(vertical = 4.dp),
                 colors = CardDefaults.cardColors(containerColor = Slate900),
                 shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, if (isBlocked) RoseRed.copy(alpha = 0.4f) else Slate800)
+                border = BorderStroke(1.dp, if (isBlocked) RoseRed.copy(alpha = 0.4f) else Slate800)
             ) {
                 Row(
                     modifier = Modifier
@@ -1071,7 +1533,7 @@ fun AppLockTab(
             Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = "CUSTOM BLOCKED PACKAGES",
-                fontSize = 12.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = Slate400,
                 letterSpacing = 1.sp
@@ -1085,7 +1547,7 @@ fun AppLockTab(
                         .padding(vertical = 3.dp),
                     colors = CardDefaults.cardColors(containerColor = Slate900),
                     shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+                    border = BorderStroke(1.dp, Slate800)
                 ) {
                     Row(
                         modifier = Modifier
@@ -1115,6 +1577,62 @@ fun AppLockTab(
         }
     }
 
+    // Add Custom Exemption Dialog
+    if (showCustomExemptDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomExemptDialog = false },
+            containerColor = Slate900,
+            title = {
+                Text("Add Custom Exemption", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        "Enter Android package name (e.g. com.banking.app, com.google.android.apps.walletnfcrel). ScreenGuard will skip all monitoring for this app.",
+                        color = Slate400,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = customExemptInput,
+                        onValueChange = { customExemptInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("com.example.bank", fontSize = 13.sp, color = Slate400) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldGreen,
+                            unfocusedBorderColor = Slate800,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val pkg = customExemptInput.trim().lowercase()
+                        if (pkg.isNotEmpty()) {
+                            FamilyRepository.toggleExemptPackage(parentId, childDeviceId, exemptPackages, pkg, true)
+                            Toast.makeText(context, "Whitelisted $pkg", Toast.LENGTH_SHORT).show()
+                            showCustomExemptDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen)
+                ) {
+                    Text("Whitelist App", color = Slate950, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomExemptDialog = false }) {
+                    Text("Cancel", color = Slate400)
+                }
+            }
+        )
+    }
+
+    // Add Custom Blocked App Dialog
     if (showCustomAppDialog) {
         AlertDialog(
             onDismissRequest = { showCustomAppDialog = false },
@@ -1172,6 +1690,8 @@ fun AppLockTab(
 
 @Composable
 fun RulesTab(onUnpair: () -> Unit) {
+    var showUnpairDialog by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1206,16 +1726,61 @@ fun RulesTab(onUnpair: () -> Unit) {
             tint = EmeraldGreen
         )
 
+        Spacer(modifier = Modifier.height(10.dp))
+
+        RuleCard(
+            title = "App Whitelisting & Exemption",
+            status = "Active",
+            description = "Exempted banking, payment, and critical communication apps run unrestricted without accessibility latency.",
+            tint = CyberSky
+        )
+
         Spacer(modifier = Modifier.height(30.dp))
 
         Button(
-            onClick = onUnpair,
+            onClick = { showUnpairDialog = true },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = Slate800),
             shape = RoundedCornerShape(10.dp)
         ) {
-            Text("Unpair Child Device", color = RoseRed, fontSize = 13.sp)
+            Icon(Icons.Default.LinkOff, contentDescription = "Unpair", tint = RoseRed, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Unpair Child Device", color = RoseRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
+    }
+
+    if (showUnpairDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnpairDialog = false },
+            containerColor = Slate900,
+            title = {
+                Text("Unpair Child Device?", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "This parent device will disconnect from the child device. You will need to re-pair with a new 6-digit code to resume monitoring.",
+                    color = Slate400,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showUnpairDialog = false
+                        onUnpair()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RoseRed)
+                ) {
+                    Text("Unpair", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnpairDialog = false }) {
+                    Text("Cancel", color = Slate400)
+                }
+            }
+        )
     }
 }
 
@@ -1230,7 +1795,7 @@ fun RuleCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Slate900),
         shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Slate800)
+        border = BorderStroke(1.dp, Slate800)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -1251,7 +1816,7 @@ fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
     return try {
         val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
         BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 }

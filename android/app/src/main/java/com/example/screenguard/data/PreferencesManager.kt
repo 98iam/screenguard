@@ -141,6 +141,11 @@ class PreferencesManager(context: Context) {
     private val _pauseUntil = MutableStateFlow(prefs.getLong(KEY_PAUSE_UNTIL, 0L))
     val pauseUntil: StateFlow<Long> = _pauseUntil.asStateFlow()
 
+    private val _exemptPackages = MutableStateFlow(
+        prefs.getStringSet(KEY_EXEMPT_PACKAGES, emptySet()) ?: emptySet()
+    )
+    val exemptPackages: StateFlow<Set<String>> = _exemptPackages.asStateFlow()
+
     // Temporary in-memory unlocked session
     @Volatile
     var isGuardianUnlockedUntil: Long = 0L
@@ -422,6 +427,40 @@ class PreferencesManager(context: Context) {
         return false
     }
 
+    fun setExemptPackages(packages: Set<String>) {
+        prefs.edit().putStringSet(KEY_EXEMPT_PACKAGES, packages).apply()
+        _exemptPackages.value = packages
+    }
+
+    fun isPackageExempt(pkg: String): Boolean {
+        if (pkg.isBlank()) return false
+        val clean = pkg.trim().lowercase()
+        return _exemptPackages.value.any { it.trim().equals(clean, ignoreCase = true) }
+    }
+
+    fun addExemptPackage(pkg: String): Boolean {
+        val clean = pkg.trim().lowercase()
+        if (clean.isEmpty()) return false
+        val current = _exemptPackages.value.toMutableSet()
+        if (current.add(clean)) {
+            prefs.edit().putStringSet(KEY_EXEMPT_PACKAGES, current).apply()
+            _exemptPackages.value = current
+            return true
+        }
+        return false
+    }
+
+    fun removeExemptPackage(pkg: String): Boolean {
+        val clean = pkg.trim().lowercase()
+        val current = _exemptPackages.value.toMutableSet()
+        if (current.remove(clean)) {
+            prefs.edit().putStringSet(KEY_EXEMPT_PACKAGES, current).apply()
+            _exemptPackages.value = current
+            return true
+        }
+        return false
+    }
+
     fun setMatchMode(mode: MatchMode) {
         prefs.edit().putString(KEY_MATCH_MODE, mode.id).apply()
         _matchMode.value = mode
@@ -454,6 +493,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_PAIRED_CHILD_ID = "key_paired_child_id"
         private const val KEY_FREE_TIME_UNTIL = "key_free_time_until"
         private const val KEY_UNINSTALL_UNLOCKED_UNTIL = "key_uninstall_unlocked_until"
+        private const val KEY_EXEMPT_PACKAGES = "key_exempt_packages"
 
         @Volatile
         private var instance: PreferencesManager? = null

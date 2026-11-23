@@ -164,10 +164,18 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
                 }
             }
         }
+
+        // Observe exempt packages flow
+        serviceScope.launch {
+            preferences.exemptPackages.collect { exempts ->
+                Log.d("ScreenGuardService", "Active exempt packages count: ${exempts.size}")
+            }
+        }
     }
 
     private fun isPackageProtected(pkg: String): Boolean {
         if (pkg.isEmpty()) return true
+        if (preferences.isPackageExempt(pkg) || preferences.exemptPackages.value.contains(pkg.lowercase())) return true
         if (pkg.equals(packageName, ignoreCase = true)) return true
         if (defaultProtectedPackages.any { it.equals(pkg, ignoreCase = true) }) return true
 
@@ -204,6 +212,13 @@ class ScreenGuardAccessibilityService : AccessibilityService() {
         }
 
         val eventPkg = event.packageName?.toString() ?: ""
+
+        // Completely ignore and never inspect or block exempted apps (e.g. Google Pay, banking apps)
+        if (eventPkg.isNotEmpty() && (preferences.isPackageExempt(eventPkg) || preferences.exemptPackages.value.contains(eventPkg.lowercase()))) {
+            currentActivePkg = ""
+            return
+        }
+
         val now = System.currentTimeMillis()
 
         // Always track active non-protected foreground package immediately

@@ -55,7 +55,8 @@ object FamilyRepository {
         val freeTimeUntil: Long = 0L,
         val uninstallUnlockedUntil: Long = 0L,
         val blockedWords: List<String> = emptyList(),
-        val blockedPackages: List<String> = emptyList()
+        val blockedPackages: List<String> = emptyList(),
+        val exemptPackages: List<String> = emptyList()
     )
 
     // ==========================================
@@ -243,6 +244,8 @@ object FamilyRepository {
                 val wordsList = wordsSnap.children.mapNotNull { it.getValue(String::class.java) }
                 val pkgsSnap = snapshot.child("blockedPackages")
                 val pkgsList = pkgsSnap.children.mapNotNull { it.getValue(String::class.java) }
+                val exemptSnap = snapshot.child("exemptPackages")
+                val exemptList = exemptSnap.children.mapNotNull { it.getValue(String::class.java) }
 
                 prefs.setFreeTimeUntil(freeTimeUntil)
                 prefs.setUninstallUnlockedUntil(uninstallUnlockedUntil)
@@ -253,6 +256,9 @@ object FamilyRepository {
                 if (pkgsSnap.exists()) {
                     prefs.setBlockedPackages(pkgsList.toSet())
                 }
+                if (exemptSnap.exists()) {
+                    prefs.setExemptPackages(exemptList.toSet())
+                }
 
                 val rules = ChildRules(
                     blockIncognito = blockIncognito,
@@ -260,7 +266,8 @@ object FamilyRepository {
                     freeTimeUntil = freeTimeUntil,
                     uninstallUnlockedUntil = uninstallUnlockedUntil,
                     blockedWords = wordsList,
-                    blockedPackages = pkgsList
+                    blockedPackages = pkgsList,
+                    exemptPackages = exemptList
                 )
                 mainHandler.post { onUpdate(rules) }
             }
@@ -312,6 +319,20 @@ object FamilyRepository {
 
         ref.limitToLast(60).addValueEventListener(listener)
         return listener
+    }
+
+    fun deleteIncident(parentId: String, childDeviceId: String, incidentId: String) {
+        if (parentId.isEmpty() || childDeviceId.isEmpty() || incidentId.isEmpty()) return
+        val db = FirebaseDatabase.getInstance()
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId)
+            .child("incidents").child(incidentId).removeValue()
+    }
+
+    fun clearAllIncidents(parentId: String, childDeviceId: String) {
+        if (parentId.isEmpty() || childDeviceId.isEmpty()) return
+        val db = FirebaseDatabase.getInstance()
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId)
+            .child("incidents").removeValue()
     }
 
     fun attachRequestsListener(
@@ -437,13 +458,21 @@ object FamilyRepository {
                     blockedPackagesList.addAll(DEFAULT_BLOCKED_PACKAGES)
                 }
 
+                val exemptPackagesList = mutableListOf<String>()
+                if (snapshot.hasChild("exemptPackages")) {
+                    for (c in snapshot.child("exemptPackages").children) {
+                        c.getValue(String::class.java)?.let { exemptPackagesList.add(it) }
+                    }
+                }
+
                 val rules = ChildRules(
                     blockIncognito = blockIncognito,
                     familyDns = familyDns,
                     freeTimeUntil = freeTimeUntil,
                     uninstallUnlockedUntil = uninstallUnlockedUntil,
                     blockedWords = blockedWordsList,
-                    blockedPackages = blockedPackagesList
+                    blockedPackages = blockedPackagesList,
+                    exemptPackages = exemptPackagesList
                 )
 
                 mainHandler.post { onRules(rules) }
@@ -486,5 +515,19 @@ object FamilyRepository {
 
     fun removeBlockedPackage(parentId: String, childDeviceId: String, currentPackages: List<String>, pkg: String) {
         toggleBlockedPackage(parentId, childDeviceId, currentPackages, pkg, block = false)
+    }
+
+    fun toggleExemptPackage(parentId: String, childDeviceId: String, currentExempt: List<String>, pkg: String, exempt: Boolean) {
+        val trimmed = pkg.trim().lowercase()
+        if (trimmed.isEmpty() || parentId.isEmpty() || childDeviceId.isEmpty()) return
+        val set = currentExempt.toMutableSet()
+        if (exempt) set.add(trimmed) else set.remove(trimmed)
+        val db = FirebaseDatabase.getInstance()
+        db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
+            .child("exemptPackages").setValue(set.toList().sorted())
+    }
+
+    fun removeExemptPackage(parentId: String, childDeviceId: String, currentExempt: List<String>, pkg: String) {
+        toggleExemptPackage(parentId, childDeviceId, currentExempt, pkg, exempt = false)
     }
 }
