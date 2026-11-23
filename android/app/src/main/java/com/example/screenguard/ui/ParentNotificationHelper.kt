@@ -71,4 +71,61 @@ object ParentNotificationHelper {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(incident.id.hashCode(), builder.build())
     }
+
+    fun showUninstallRequestNotification(context: Context, req: FamilyRepository.UninstallRequest) {
+        createNotificationChannel(context)
+
+        val intent = Intent(context, ParentMainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            req.id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val snippet = if (req.reason.length > 80) req.reason.take(80) + "..." else req.reason
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("⚠️ App Removal Request (${req.wordCount} words)")
+            .setContentText("Child wrote: \"$snippet\"")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("Child is requesting permission to uninstall ScreenGuard.\n\nReason written (${req.wordCount} words):\n\"${req.reason}\"")
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(req.id.hashCode(), builder.build())
+    }
+
+    fun showFreeTimeRequestNotification(context: Context, req: FamilyRepository.FreeTimeRequest) {
+        createNotificationChannel(context)
+
+        val intent = Intent(context, ParentMainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            req.id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("⏳ Break Request: ${req.durationMinutes} Minutes")
+            .setContentText("Child device is asking for a ${req.durationMinutes}-minute break.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(req.id.hashCode(), builder.build())
+    }
 }

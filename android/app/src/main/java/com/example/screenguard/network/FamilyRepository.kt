@@ -216,8 +216,14 @@ object FamilyRepository {
         )
 
         reqRef.setValue(data)
-            .addOnSuccessListener { onResult(true, "Uninstallation request sent to parent.") }
-            .addOnFailureListener { onResult(false, it.message ?: "Failed sending request.") }
+            .addOnSuccessListener {
+                Log.d(TAG, "Uninstallation request saved to Firebase successfully: $reqId")
+                mainHandler.post { onResult(true, "Uninstallation request sent to parent.") }
+            }
+            .addOnFailureListener {
+                Log.e(TAG, "Failed sending uninstallation request to Firebase", it)
+                mainHandler.post { onResult(false, it.message ?: "Failed sending request.") }
+            }
     }
 
     fun attachChildRulesListener(
@@ -350,8 +356,10 @@ object FamilyRepository {
                 val ftList = mutableListOf<FreeTimeRequest>()
                 for (c in snapshot.child("free_time").children) {
                     val id = c.child("id").getValue(String::class.java) ?: c.key ?: ""
-                    val duration = c.child("durationMinutes").getValue(Int::class.java) ?: 15
-                    val reqAt = c.child("requestedAt").getValue(Long::class.java) ?: 0L
+                    val duration = (c.child("durationMinutes").value as? Number)?.toInt()
+                        ?: c.child("durationMinutes").getValue(Int::class.java) ?: 15
+                    val reqAt = (c.child("requestedAt").value as? Number)?.toLong()
+                        ?: c.child("requestedAt").getValue(Long::class.java) ?: 0L
                     val status = c.child("status").getValue(String::class.java) ?: "PENDING"
                     ftList.add(FreeTimeRequest(id, duration, reqAt, status))
                 }
@@ -362,8 +370,10 @@ object FamilyRepository {
                 for (c in snapshot.child("uninstall").children) {
                     val id = c.child("id").getValue(String::class.java) ?: c.key ?: ""
                     val reason = c.child("reason").getValue(String::class.java) ?: ""
-                    val wc = c.child("wordCount").getValue(Int::class.java) ?: 0
-                    val reqAt = c.child("requestedAt").getValue(Long::class.java) ?: 0L
+                    val wc = (c.child("wordCount").value as? Number)?.toInt()
+                        ?: c.child("wordCount").getValue(Int::class.java) ?: 0
+                    val reqAt = (c.child("requestedAt").value as? Number)?.toLong()
+                        ?: c.child("requestedAt").getValue(Long::class.java) ?: 0L
                     val status = c.child("status").getValue(String::class.java) ?: "PENDING"
                     uninstList.add(UninstallRequest(id, reason, wc, reqAt, status))
                 }

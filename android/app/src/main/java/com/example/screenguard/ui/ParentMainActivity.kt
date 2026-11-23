@@ -283,13 +283,23 @@ fun ParentDashboardScreen(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Incidents", "Word Guard", "App Lock", "Approvals", "Rules & Status")
 
     var incidents by remember { mutableStateOf<List<FamilyRepository.Incident>>(emptyList()) }
     var freeTimeRequests by remember { mutableStateOf<List<FamilyRepository.FreeTimeRequest>>(emptyList()) }
     var uninstallRequests by remember { mutableStateOf<List<FamilyRepository.UninstallRequest>>(emptyList()) }
     var childRules by remember { mutableStateOf<FamilyRepository.ChildRules?>(null) }
     var viewingScreenshot by remember { mutableStateOf<FamilyRepository.Incident?>(null) }
+
+    val pendingApprovalCount = freeTimeRequests.count { it.status == "PENDING" } + uninstallRequests.count { it.status == "PENDING" }
+    val tabs = remember(pendingApprovalCount) {
+        listOf(
+            "Incidents",
+            "Word Guard",
+            "App Lock",
+            if (pendingApprovalCount > 0) "Approvals ($pendingApprovalCount)" else "Approvals",
+            "Rules & Status"
+        )
+    }
 
     // Android 13+ Notification permission prompt banner state
     var hasNotifPermission by remember {
@@ -317,7 +327,10 @@ fun ParentDashboardScreen(
         val rulesRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId).child("rules")
 
         var isInitialSync = true
+        var isInitialReqSync = true
         val knownIncidentIds = mutableSetOf<String>()
+        val knownUninstallReqIds = mutableSetOf<String>()
+        val knownFreeTimeReqIds = mutableSetOf<String>()
 
         val incListener = FamilyRepository.attachIncidentsListener(parentId, childDeviceId) { list ->
             if (isInitialSync) {
@@ -336,8 +349,33 @@ fun ParentDashboardScreen(
         val reqListener = FamilyRepository.attachRequestsListener(
             parentId = parentId,
             childDeviceId = childDeviceId,
-            onFreeTime = { ftList -> freeTimeRequests = ftList },
-            onUninstall = { uList -> uninstallRequests = uList }
+            onFreeTime = { ftList ->
+                if (isInitialReqSync) {
+                    knownFreeTimeReqIds.addAll(ftList.map { it.id })
+                } else {
+                    for (req in ftList) {
+                        if (req.status == "PENDING" && req.id !in knownFreeTimeReqIds) {
+                            knownFreeTimeReqIds.add(req.id)
+                            ParentNotificationHelper.showFreeTimeRequestNotification(context, req)
+                        }
+                    }
+                }
+                freeTimeRequests = ftList
+            },
+            onUninstall = { uList ->
+                if (isInitialReqSync) {
+                    knownUninstallReqIds.addAll(uList.map { it.id })
+                    isInitialReqSync = false
+                } else {
+                    for (req in uList) {
+                        if (req.status == "PENDING" && req.id !in knownUninstallReqIds) {
+                            knownUninstallReqIds.add(req.id)
+                            ParentNotificationHelper.showUninstallRequestNotification(context, req)
+                        }
+                    }
+                }
+                uninstallRequests = uList
+            }
         )
         val rulesListener = FamilyRepository.attachRulesListener(
             parentId = parentId,
