@@ -158,6 +158,16 @@ object PairingManager {
                     return
                 }
 
+                // Explicitly sync pairing node to guarantee listener trigger on parent
+                pairingRef.updateChildren(
+                    mapOf(
+                        "status" to "PAIRED",
+                        "childDeviceId" to childDeviceId,
+                        "childModel" to childModel,
+                        "pairedAt" to System.currentTimeMillis()
+                    )
+                )
+
                 // Register child under family channel atomically
                 val familyRef = db.getReference("devices").child("families").child(parentId).child(childDeviceId)
                 familyRef.child("info").setValue(

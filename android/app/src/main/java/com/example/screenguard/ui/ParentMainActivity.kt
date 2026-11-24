@@ -49,8 +49,7 @@ import androidx.core.content.ContextCompat
 import com.example.screenguard.data.PreferencesManager
 import com.example.screenguard.network.FamilyRepository
 import com.example.screenguard.network.PairingManager
-import com.google.firebase.database.FirebaseDatabase
-import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.*
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -96,6 +95,28 @@ fun ParentAppRoot(prefs: PreferencesManager) {
         }
     }
 
+    // Auto-detect if child has already linked under this parentId in Firebase
+    LaunchedEffect(parentId) {
+        if (pairedChildId.isEmpty()) {
+            val db = FirebaseDatabase.getInstance()
+            db.getReference("devices").child("families").child(parentId)
+                .addListenerForSingleValueEvent(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        for (childSnap in snapshot.children) {
+                            val childId = childSnap.key ?: ""
+                            if (childId.isNotEmpty()) {
+                                prefs.setParentPairing(parentId, "Guardian Parent")
+                                prefs.setPairedChild(childId)
+                                pairedChildId = childId
+                                break
+                            }
+                        }
+                    }
+                    override fun onCancelled(error: DatabaseError) {}
+                })
+        }
+    }
+
     if (pairedChildId.isEmpty()) {
         ParentPairingScreen(
             parentId = parentId,
@@ -128,13 +149,31 @@ fun ParentPairingScreen(
     var isGenerating by remember { mutableStateOf(false) }
     var listenerRef by remember { mutableStateOf<ValueEventListener?>(null) }
 
-    DisposableEffect(pairingCode) {
+    // Dual-channel listener: Listen directly to devices/families/{parentId}
+    // As soon as ANY child enters the PIN and registers under this family, complete pairing instantly!
+    DisposableEffect(parentId) {
+        val db = FirebaseDatabase.getInstance()
+        val familyRef = db.getReference("devices").child("families").child(parentId)
+        val famListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                for (childSnap in snapshot.children) {
+                    val childId = childSnap.key ?: ""
+                    if (childId.isNotEmpty()) {
+                        val model = childSnap.child("info").child("childModel").getValue(String::class.java) ?: "Child Device"
+                        onPaired(childId, model)
+                        break
+                    }
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        familyRef.addValueEventListener(famListener)
+
         onDispose {
-            pairingCode?.let { code ->
-                listenerRef?.let { l ->
-                    FirebaseDatabase.getInstance()
-                        .getReference("devices").child("pairings").child(code)
-                        .removeEventListener(l)
+            familyRef.removeEventListener(famListener)
+            listenerRef?.let { l ->
+                pairingCode?.let { code ->
+                    db.getReference("devices").child("pairings").child(code).removeEventListener(l)
                 }
             }
         }
@@ -269,6 +308,57 @@ fun ParentPairingScreen(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("Valid for 15 minutes", fontSize = 11.sp, color = Slate400)
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            val db = FirebaseDatabase.getInstance()
+                            db.getReference("devices").child("families").child(parentId)
+                                .addListenerForSingleValueEvent(object : ValueEventListener {
+                                    override fun onDataChange(snapshot: DataSnapshot) {
+                                        var found = false
+                                        for (childSnap in snapshot.children) {
+                                            val childId = childSnap.key ?: ""
+                                            if (childId.isNotEmpty()) {
+                                                found = true
+                                                val model = childSnap.child("info").child("childModel").getValue(String::class.java) ?: "Child Device"
+                                                Toast.makeText(context, "Linked with $model!", Toast.LENGTH_SHORT).show()
+                                                onPaired(childId, model)
+                                                break
+                                            }
+                                        }
+                                        if (!found && pairingCode != null) {
+                                            db.getReference("devices").child("pairings").child(pairingCode!!)
+                                                .addListenerForSingleValueEvent(object : ValueEventListener {
+                                                    override fun onDataChange(codeSnap: DataSnapshot) {
+                                                        val status = codeSnap.child("status").getValue(String::class.java) ?: ""
+                                                        if (status == "PAIRED") {
+                                                            val cId = codeSnap.child("childDeviceId").getValue(String::class.java) ?: ""
+                                                            val cModel = codeSnap.child("childModel").getValue(String::class.java) ?: "Child Device"
+                                                            if (cId.isNotEmpty()) {
+                                                                Toast.makeText(context, "Linked with $cModel!", Toast.LENGTH_SHORT).show()
+                                                                onPaired(cId, cModel)
+                                                            }
+                                                        } else {
+                                                            Toast.makeText(context, "Child device has not connected yet.", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                    override fun onCancelled(e: DatabaseError) {}
+                                                })
+                                        }
+                                    }
+                                    override fun onCancelled(error: DatabaseError) {}
+                                })
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CyberSky),
+                        border = BorderStroke(1.dp, CyberSky.copy(alpha = 0.5f))
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Already entered on child? Check Status", fontSize = 12.sp)
+                    }
                 }
             }
         }
